@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual envs
+venv/
+.venv/
+ENV/
+env/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Logs and DBs
+*.log
+*.sqlite3
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Large data / models / checkpoints (do NOT push)
+dataset/
+data/
+models/
+train/
+**/weights/
+**/*.pt
+**/*.pth
+**/*.ckpt
+**/*.onnx
+**/*.tflite
+
+# Jupyter notebook artifacts (if any)
+.ipynb_checkpoints/
+*.ipynb
+
+# Secrets
+.env
+.env.*
+secrets.json
+*.pem
+*.key
+
+# Cache / test
+.coverage
+htmlcov/
+.mypy_cache/
+.pytest_cache/
