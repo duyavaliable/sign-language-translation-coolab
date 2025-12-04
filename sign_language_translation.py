@@ -156,21 +156,20 @@ def visualize_dataset(data_dir=None, num_samples=3):
     plt.show()
 
 # ==================== TẠO FILE CẤU HÌNH ====================
-def create_dataset_yaml():
+def create_dataset_yaml(use_all: bool = False):
     """
     Tạo file dataset.yaml cho YOLO training
-    
-    Returns:
-        dataset_yaml_path: Đường dẫn đến file dataset.yaml
+    If use_all True -> val points to train/images (use all data for training + val)
     """
     os.makedirs(TRAIN_DIR, exist_ok=True)
     
     dataset_yaml_path = os.path.join(TRAIN_DIR, 'dataset.yaml')
+    val_path = 'train/images' if use_all else 'val/images'
     
     dataset_yaml_content = f"""\
 path: {DATASET_DIR}
 train: train/images
-val: val/images
+val: {val_path}
 
 nc: 22
 names:
@@ -200,12 +199,12 @@ names:
     
     with open(dataset_yaml_path, "w", encoding='utf-8') as f:
         f.write(dataset_yaml_content)
-    print(f"✓ Đã tạo dataset.yaml tại: {dataset_yaml_path}")
+    print(f"✓ Đã tạo dataset.yaml tại: {dataset_yaml_path} (use_all={use_all})")
     
     return dataset_yaml_path
 
 # ==================== TRAINING ====================
-def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov5n.pt'):
+def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov5n.pt', use_all: bool = False):
     """
     Huấn luyện YOLO model
     
@@ -222,7 +221,7 @@ def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov5n.pt'):
     print("🚀 Bắt đầu training...")
     
     # Tạo dataset.yaml
-    dataset_yaml_path = create_dataset_yaml()
+    dataset_yaml_path = create_dataset_yaml(use_all=use_all)
     
     # Kiểm tra dataset.yaml
     if not os.path.exists(dataset_yaml_path):
