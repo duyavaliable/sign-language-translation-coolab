@@ -1,0 +1,206 @@
+# Sign Language Translation
+
+Hệ thống nhận diện ngôn ngữ ký hiệu (ASL - American Sign Language) sử dụng YOLOv5 và Deep Learning.
+
+## 📋 Mô tả
+
+Project này sử dụng YOLO (You Only Look Once) để phát hiện và nhận diện các ký hiệu ngôn ngữ tay ASL từ ảnh hoặc video. Hệ thống có thể:
+
+- Huấn luyện model từ dataset tùy chỉnh
+- Phát hiện và nhận diện 22 ký tự ASL (A-Z trừ F và J)
+- Dự đoán thời gian thực trên ảnh mới
+- Visualize dataset trước khi training
+
+## 🗂️ Cấu trúc thư mục
+
+```
+sign-language-translation/
+├── .gitignore                      # Loại trừ file không cần thiết
+├── requirements.txt                # Thư viện Python cần thiết
+├── sign_language_translation.py    # File chính
+├── README.md                       # File này
+├── dataset/                        # Dataset (không được push lên GitHub)
+│   ├── train/
+│   │   ├── images/                # Ảnh training
+│   │   └── labels/                # Labels YOLO format (.txt)
+│   └── val/
+│       ├── images/                # Ảnh validation
+│       └── labels/                # Labels validation
+├── models/                         # Models đã train (không được push)
+│   └── sign_language_model/
+│       └── weights/
+│           └── best.pt            # Model tốt nhất
+└── train/                          # Config files
+    └── dataset.yaml               # YOLO dataset config
+```
+
+## 🚀 Cài đặt
+
+### Yêu cầu hệ thống
+
+- Python 3.10 hoặc 3.11 (⚠️ **KHÔNG** dùng Python 3.13)
+- Windows 10/11, Linux, hoặc macOS
+- GPU NVIDIA (khuyến nghị) hoặc CPU
+
+### Bước 1: Clone repository
+
+```bash
+git clone https://github.com/your-username/sign-language-translation.git
+cd sign-language-translation
+```
+
+### Bước 2: Tạo môi trường ảo
+
+**Windows:**
+```bash
+# Tạo môi trường ảo
+python -m venv venv
+
+# Kích hoạt môi trường ảo
+venv\Scripts\activate
+```
+
+**Linux/macOS:**
+```bash
+# Tạo môi trường ảo
+python3 -m venv venv
+
+# Kích hoạt môi trường ảo
+source venv/bin/activate
+```
+
+### Bước 3: Cài đặt thư viện
+
+```bash
+# Nâng cấp pip
+python -m pip install --upgrade pip setuptools wheel
+
+# Cài đặt dependencies
+pip install -r requirements.txt
+```
+
+### Bước 4: Chuẩn bị dataset
+
+1. **Tải dataset ASL** từ một trong các nguồn:
+   - [Roboflow ASL Dataset](https://universe.roboflow.com/david-lee-d0rhs/american-sign-language-letters)
+   - [Kaggle ASL Dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet)
+   - Hoặc data tùy chỉnh của bạn
+
+2. **Tổ chức dataset** theo cấu trúc YOLO:
+   ```
+   dataset/
+   ├── train/
+   │   ├── images/        # Đặt ảnh training ở đây
+   │   └── labels/        # Đặt file .txt labels ở đây
+   └── val/
+       ├── images/        # Đặt ảnh validation ở đây
+       └── labels/        # Đặt file .txt labels ở đây
+   ```
+
+3. **Format label YOLO** (mỗi file .txt):
+   ```
+   <class_id> <x_center> <y_center> <width> <height>
+   ```
+   Ví dụ: `0 0.5 0.5 0.3 0.4`
+
+## 🎯 Sử dụng
+
+### Chạy chương trình chính
+
+```bash
+python sign_language_translation.py
+```
+
+Menu sẽ hiển thị:
+```
+🤖 SIGN LANGUAGE TRANSLATION - LOCAL VERSION
+============================================================
+📁 Base Directory: E:\...\sign-language-translation
+📁 Dataset Directory: E:\...\dataset
+📁 Models Directory: E:\...\models
+============================================================
+
+Chọn chức năng:
+1. Tạo file dataset.yaml
+2. Visualize dataset
+3. Train model
+4. Predict trên ảnh
+0. Thoát
+```
+
+### 1. Tạo file cấu hình dataset
+
+```bash
+# Chọn option 1
+# Hoặc gọi trực tiếp:
+python -c "from sign_language_translation import create_dataset_yaml; create_dataset_yaml()"
+```
+
+### 2. Xem mẫu dataset
+
+```bash
+# Chọn option 2
+# Hoặc:
+python -c "from sign_language_translation import visualize_dataset; visualize_dataset()"
+```
+
+### 3. Huấn luyện model
+
+```bash
+# Chọn option 3, nhập epochs và batch size
+# Hoặc:
+python -c "from sign_language_translation import train_model; train_model(epochs=50, batch=16, use_all=True)"
+```
+
+**Tham số training:**
+- `epochs`: Số lần duyệt toàn bộ dataset (mặc định: 50)
+- `batch`: Số ảnh xử lý cùng lúc (mặc định: 16)
+- `imgsz`: Kích thước ảnh input (mặc định: 640)
+- `use_all`: Dùng toàn bộ data cho training (mặc định: False)
+
+### 4. Dự đoán trên ảnh mới
+
+```bash
+# Chọn option 4, nhập đường dẫn model và ảnh
+# Hoặc:
+python -c "from ultralytics import YOLO; from sign_language_translation import predict_image; m=YOLO('models/sign_language_model/weights/best.pt'); predict_image(m, 'path/to/image.jpg')"
+```
+
+## 📊 Dataset
+
+Dataset bao gồm **22 class** tương ứng với các ký tự ASL:
+```
+A, B, C, D, E, G, H, I, K, L, M, N, O, P, Q, R, S, T, U, V, X, Y
+```
+(Không bao gồm F và J vì yêu cầu chuyển động)
+
+
+## 📦 Quản lý dataset và model
+
+Khi clone repo về, bạn cần:
+
+1. **Tải dataset riêng** từ nguồn công khai (xem phần [Bước 4](#bước-4-chuẩn-bị-dataset))
+2. **Train model của riêng bạn** hoặc tải pretrained model (nếu có)
+
+
+**Option 3: Kaggle / Hugging Face**
+```markdown
+Dataset: https://www.kaggle.com/datasets/your-username/asl-dataset
+Model: https://huggingface.co/your-username/asl-yolo-model
+```
+
+
+## 📄 License
+
+MIT License - Xem file LICENSE để biết chi tiết
+
+## 🤝 Đóng góp
+
+1. Fork repo
+2. Tạo branch mới (`git checkout -b feature/AmazingFeature`)
+3. Commit thay đổi (`git commit -m 'Add some AmazingFeature'`)
+4. Push lên branch (`git push origin feature/AmazingFeature`)
+5. Tạo Pull Request
+
+
+**⚠️ Lưu ý:** Project này chỉ dùng cho mục đích học tập và nghiên cứu.
