@@ -1,32 +1,36 @@
 # -*- coding: utf-8 -*-
 """
-Sign Language Translation - YOLOv8 Segmentation
+Sign Language Translation - YOLOv8 Detection
 Optimized for Local Environment
 """
 
 import os
 import cv2
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # headless backend, không cần Tcl/Tk
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
 
 # ==================== CẤU HÌNH ĐƯỜNG DẪN ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATASET_DIR = os.path.join(BASE_DIR, 'dataset')
-MODELS_DIR = os.path.join(BASE_DIR, 'models')
-TRAIN_DIR = os.path.join(BASE_DIR, 'train')
+TRAIN_DIR = os.path.join(BASE_DIR, 'train')        # Thư mục train (images + labels)
+VALID_DIR = os.path.join(BASE_DIR, 'valid')        # Thư mục validation
+TEST_DIR = os.path.join(BASE_DIR, 'test')          # Thư mục test
+MODELS_DIR = os.path.join(BASE_DIR, 'models')      # Lưu trained models
+CONFIG_DIR = BASE_DIR                               # dataset.yaml sẽ lưu ở root
 
 # ==================== KHỞI TẠO MODEL ====================
 print("🔄 Đang khởi tạo YOLO model...")
 yolo_model = None  # Sẽ load khi cần thiết
 current_model_path = None  # Track model đang dùng
 
-def get_yolo_model(model_path='yolov8n-seg.pt'):
+def get_yolo_model(model_path='yolov8n.pt'):
     """
     Lazy loading YOLO model với khả năng reload
     
     Args:
-        model_path: Đường dẫn đến YOLO model (mặc định: yolov8n-seg.pt)
+        model_path: Đường dẫn đến YOLO model (mặc định: yolov8n.pt - Detection)
     
     Returns:
         model: YOLO model instance
@@ -41,18 +45,18 @@ def get_yolo_model(model_path='yolov8n-seg.pt'):
         
         yolo_model = YOLO(model_path)
         current_model_path = model_path
-        print(f"✓ Đã tải YOLOv8 Segmentation model: {model_path}")
+        print(f"✓ Đã tải YOLOv8 Detection model: {model_path}")
     
     return yolo_model
 
 # ==================== CHỨC NĂNG XỬ LÝ ẢNH ====================
-def extract_hand_region(image, model_path='yolov8n-seg.pt'):
+def extract_hand_region(image, model_path='yolov8n.pt'):
     """
-    Trích xuất vùng tay từ ảnh sử dụng YOLO segmentation
+    Trích xuất vùng tay từ ảnh sử dụng YOLO detection
     
     Args:
         image: Ảnh đầu vào (numpy array)
-        model_path: Đường dẫn đến YOLO segmentation model
+        model_path: Đường dẫn đến YOLO detection model
     
     Returns:
         hand_box: Vùng ảnh chứa bàn tay hoặc ảnh trống nếu không phát hiện
@@ -60,7 +64,7 @@ def extract_hand_region(image, model_path='yolov8n-seg.pt'):
     model = get_yolo_model(model_path)
     results = model(image, verbose=False)
     
-    # Lấy boxes từ segmentation results
+    # Lấy boxes từ detection results
     if hasattr(results[0], 'boxes') and len(results[0].boxes) > 0:
         boxes = results[0].boxes.xyxy.cpu().numpy()
         
@@ -72,7 +76,7 @@ def extract_hand_region(image, model_path='yolov8n-seg.pt'):
         
         # Vẽ bounding box
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(image, "Hand Detected (YOLOv8-seg)", (x1, y1-10),
+        cv2.putText(image, "Hand Detected (YOLOv8)", (x1, y1-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         return hand_box
     
@@ -121,107 +125,106 @@ def draw_prediction(image, sign, confidence):
     return result
 
 # ==================== HIỂN THỊ DATASET ====================
-def visualize_dataset(data_dir=None, num_samples=3):
+def visualize_dataset(data_type='train', num_samples=3):
     """
     Hiển thị mẫu từ dataset
-    Hỗ trợ cả cấu trúc flat (images trực tiếp) và per-class (subfolders)
     
     Args:
-        data_dir: Đường dẫn đến thư mục dataset
-        num_samples: Số lượng mẫu hiển thị cho mỗi class
+        data_type: Loại dataset ('train', 'valid', hoặc 'test')
+        num_samples: Số lượng mẫu hiển thị
     """
-    if data_dir is None:
-        data_dir = os.path.join(DATASET_DIR, 'train', 'images')
-    
-    if not os.path.exists(data_dir):
-        print(f"❌ Thư mục {data_dir} không tồn tại.")
+    # Xác định thư mục dựa trên data_type
+    if data_type == 'train':
+        data_dir = TRAIN_DIR
+    elif data_type == 'valid':
+        data_dir = VALID_DIR
+    elif data_type == 'test':
+        data_dir = TEST_DIR
+    else:
+        print(f"❌ data_type không hợp lệ: {data_type}. Chọn 'train', 'valid', hoặc 'test'.")
         return
     
-    # Kiểm tra cấu trúc: flat hoặc per-class
-    image_files = [f for f in os.listdir(data_dir) 
+    images_dir = os.path.join(data_dir, 'images')
+    labels_dir = os.path.join(data_dir, 'labels')
+    
+    if not os.path.exists(images_dir):
+        print(f"❌ Thư mục {images_dir} không tồn tại.")
+        return
+    
+    # Lấy danh sách ảnh
+    image_files = [f for f in os.listdir(images_dir) 
                    if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     
-    if image_files:
-        # Cấu trúc flat: tất cả ảnh trong images/
-        print(f"📁 Dataset structure: FLAT (tất cả ảnh trong {data_dir})")
-        classes = ['all_images']
-        class_images = {classes[0]: image_files}
-    else:
-        # Cấu trúc per-class: images/<class>/*.jpg
-        classes = sorted([d for d in os.listdir(data_dir)
-                        if os.path.isdir(os.path.join(data_dir, d))])
-        
-        if not classes:
-            print(f"❌ Không tìm thấy ảnh hoặc class trong {data_dir}")
-            return
-        
-        print(f"📁 Dataset structure: PER-CLASS ({len(classes)} classes)")
-        class_images = {}
-        for cls in classes:
-            class_dir = os.path.join(data_dir, cls)
-            imgs = [f for f in os.listdir(class_dir)
-                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            class_images[cls] = imgs
+    if not image_files:
+        print(f"❌ Không tìm thấy ảnh trong {images_dir}")
+        return
+    
+    print(f"📁 Dataset: {data_type.upper()}")
+    print(f"📁 Images directory: {images_dir}")
+    print(f"📁 Labels directory: {labels_dir}")
+    print(f"📊 Total images: {len(image_files)}")
+    
+    # Chọn mẫu ngẫu nhiên
+    import random
+    samples = random.sample(image_files, min(num_samples, len(image_files)))
     
     # Hiển thị
-    num_classes = len(classes)
-    fig = plt.figure(figsize=(12, 2*num_classes))
+    fig = plt.figure(figsize=(15, 5))
     
-    for i, class_name in enumerate(classes):
-        images = class_images[class_name]
+    for i, image_name in enumerate(samples):
+        ax = fig.add_subplot(1, len(samples), i + 1)
         
-        if not images:
-            continue
+        image_path = os.path.join(images_dir, image_name)
+        img = cv2.imread(image_path)
         
-        samples = images[:num_samples] if len(images) > num_samples else images
-        
-        for j, image_name in enumerate(samples):
-            idx = i * num_samples + j + 1
-            ax = fig.add_subplot(num_classes, num_samples, idx)
+        if img is not None:
+            if len(img.shape) == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
-            # Xác định đường dẫn
-            if class_name == 'all_images':
-                image_path = os.path.join(data_dir, image_name)
-            else:
-                image_path = os.path.join(data_dir, class_name, image_name)
-            
-            img = cv2.imread(image_path)
-            
-            if img is not None:
-                if len(img.shape) == 3:
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                
-                ax.imshow(img, cmap='gray' if len(img.shape) == 2 else None)
-                ax.set_title(f"{class_name}" if class_name != 'all_images' else image_name[:15])
-                ax.axis('off')
+            ax.imshow(img, cmap='gray' if len(img.shape) == 2 else None)
+            ax.set_title(f"{image_name[:20]}...")
+            ax.axis('off')
     
     plt.tight_layout()
     plt.show()
-    print(f"✓ Hiển thị {num_classes} class với tối đa {num_samples} mẫu/class")
+    print(f"✓ Hiển thị {len(samples)} mẫu từ {data_type} dataset")
 
 # ==================== TẠO FILE CẤU HÌNH ====================
-def create_dataset_yaml(use_all: bool = False):
+def create_dataset_yaml():
     """
-    Tạo file dataset.yaml cho YOLO Segmentation training
-    
-    Args:
-        use_all: Nếu True, dùng toàn bộ train data cho cả training và validation
+    Tạo file dataset.yaml cho YOLO Detection training
     
     Returns:
         dataset_yaml_path: Đường dẫn đến file yaml đã tạo
     """
-    os.makedirs(TRAIN_DIR, exist_ok=True)
+    dataset_yaml_path = os.path.join(CONFIG_DIR, 'dataset.yaml')
     
-    dataset_yaml_path = os.path.join(TRAIN_DIR, 'dataset.yaml')
-    val_path = 'train/images' if use_all else 'val/images'
+    # Kiểm tra các thư mục tồn tại
+    train_images = os.path.join(TRAIN_DIR, 'images')
+    train_labels = os.path.join(TRAIN_DIR, 'labels')
+    valid_images = os.path.join(VALID_DIR, 'images')
+    valid_labels = os.path.join(VALID_DIR, 'labels')
+    
+    # Cảnh báo nếu thiếu thư mục
+    if not os.path.exists(train_images):
+        print(f"⚠️  WARNING: {train_images} không tồn tại!")
+    if not os.path.exists(train_labels):
+        print(f"⚠️  WARNING: {train_labels} không tồn tại!")
+    if not os.path.exists(valid_images):
+        print(f"⚠️  WARNING: {valid_images} không tồn tại!")
+    if not os.path.exists(valid_labels):
+        print(f"⚠️  WARNING: {valid_labels} không tồn tại!")
     
     dataset_yaml_content = f"""\
-# YOLOv8 Segmentation Dataset Configuration
+# YOLOv8 Detection Dataset Configuration
 # Sign Language Translation - 22 ASL Letters
 
-path: {DATASET_DIR}
+# Đường dẫn tuyệt đối đến root directory
+path: {BASE_DIR}
+
+# Đường dẫn tương đối từ path
 train: train/images
-val: {val_path}
+val: valid/images
 
 # Number of classes
 nc: 22
@@ -256,63 +259,58 @@ names:
         f.write(dataset_yaml_content)
     
     print(f"✓ Đã tạo dataset.yaml tại: {dataset_yaml_path}")
-    print(f"  - Training path: train/images")
-    print(f"  - Validation path: {val_path}")
-    print(f"  - use_all={use_all}")
+    print(f"  - Training path: train/images & train/labels")
+    print(f"  - Validation path: valid/images & valid/labels")
+    print(f"  - Task: Detection (bounding box)")
     
     return dataset_yaml_path
 
 # ==================== TRAINING ====================
-def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n-seg.pt', use_all: bool = False):
+def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n.pt'):
     """
-    Huấn luyện YOLO Segmentation model
+    Huấn luyện YOLO Detection model
     
     Args:
         epochs: Số epochs training
         batch: Batch size
         imgsz: Kích thước ảnh input
-        model_name: Tên pretrained model (mặc định: yolov8n-seg.pt)
-        use_all: Dùng toàn bộ data cho training
+        model_name: Tên pretrained model 
+                   - 'yolov8n.pt' (nano - nhanh)
+                   - 'yolov8s.pt' (small)
+                   - 'yolov8m.pt' (medium)
+                   - 'yolov8l.pt' (large)
+                   - 'yolov8x.pt' (xlarge - chính xác nhất)
     
     Returns:
         model: YOLO model đã train
         results: Kết quả training
     """
     print("=" * 60)
-    print("🚀 BẮT ĐẦU TRAINING YOLOv8 SEGMENTATION MODEL")
+    print(f"🚀 BẮT ĐẦU TRAINING YOLOv8 DETECTION MODEL")
     print("=" * 60)
     
     # Tạo dataset.yaml
-    dataset_yaml_path = create_dataset_yaml(use_all=use_all)
+    dataset_yaml_path = create_dataset_yaml()
     
-    # Load pretrained segmentation model
+    # Load pretrained model
     model = YOLO(model_name)
     print(f"\n✓ Đã load pretrained model: {model_name}")
-    print(f"  - Task: Segmentation")
+    print(f"  - Task: Detection (Bounding Box)")
     print(f"  - Architecture: YOLOv8")
     
-    # Kiểm tra dataset.yaml
-    if not os.path.exists(dataset_yaml_path):
-        raise FileNotFoundError(f"❌ dataset.yaml không tìm thấy: {dataset_yaml_path}")
-    
     # Kiểm tra dataset structure
-    train_images = os.path.join(DATASET_DIR, 'train', 'images')
-    train_labels = os.path.join(DATASET_DIR, 'train', 'labels')
-    val_images = os.path.join(DATASET_DIR, 'val', 'images')
+    train_images = os.path.join(TRAIN_DIR, 'images')
+    train_labels = os.path.join(TRAIN_DIR, 'labels')
+    valid_images = os.path.join(VALID_DIR, 'images')
+    valid_labels = os.path.join(VALID_DIR, 'labels')
     
     if not os.path.exists(train_images):
         raise FileNotFoundError(f"❌ Không tìm thấy: {train_images}")
     if not os.path.exists(train_labels):
         raise FileNotFoundError(f"❌ Không tìm thấy: {train_labels}")
-    
-    # Cảnh báo nếu không có validation data
-    if not use_all and not os.path.exists(val_images):
-        print(f"\n⚠️  WARNING: Validation path '{val_images}' không tồn tại!")
-        print(f"   Khuyến nghị: Đặt use_all=True hoặc chuẩn bị validation data.")
-        response = input("   Tiếp tục training? (y/n): ")
-        if response.lower() != 'y':
-            print("❌ Training bị hủy.")
-            return None, None
+    if not os.path.exists(valid_images):
+        print(f"⚠️  WARNING: {valid_images} không tồn tại!")
+        print("   Training sẽ dùng train data để validation.")
     
     # Đếm số ảnh và labels
     num_train_images = len([f for f in os.listdir(train_images) 
@@ -320,16 +318,22 @@ def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n-seg.pt', use
     num_train_labels = len([f for f in os.listdir(train_labels) 
                            if f.endswith('.txt')])
     
+    num_valid_images = 0
+    if os.path.exists(valid_images):
+        num_valid_images = len([f for f in os.listdir(valid_images) 
+                               if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+    
     print(f"\n📊 Dataset Statistics:")
     print(f"  - Training images: {num_train_images}")
     print(f"  - Training labels: {num_train_labels}")
+    print(f"  - Validation images: {num_valid_images}")
     print(f"  - Classes: 22 (ASL letters)")
     
     print(f"\n⚙️  Training Configuration:")
     print(f"  - Epochs: {epochs}")
     print(f"  - Batch size: {batch}")
     print(f"  - Image size: {imgsz}")
-    print(f"  - Task: segment")
+    print(f"  - Task: detect (bounding box)")
     
     # Train model
     print("\n" + "=" * 60)
@@ -342,8 +346,8 @@ def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n-seg.pt', use
         imgsz=imgsz,
         batch=batch,
         project=MODELS_DIR,
-        name='sign_language_model',
-        task='segment',
+        name='sign_language_detection',
+        task='detect',
         patience=10,  # Early stopping
         save=True,
         plots=True
@@ -352,17 +356,63 @@ def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n-seg.pt', use
     print("\n" + "=" * 60)
     print("✅ TRAINING HOÀN TẤT!")
     print("=" * 60)
-    print(f"📁 Model được lưu tại: {MODELS_DIR}/sign_language_model/weights/best.pt")
+    print(f"📁 Model được lưu tại: {MODELS_DIR}/sign_language_detection/weights/best.pt")
     
     return model, results
+
+# ==================== ĐÁNH GIÁ MODEL ====================
+def evaluate_model(model_path, data_type='test'):
+    """
+    Đánh giá model trên test dataset
+    
+    Args:
+        model_path: Đường dẫn đến trained model
+        data_type: Loại dataset để đánh giá ('test' hoặc 'val')
+    
+    Returns:
+        metrics: Kết quả đánh giá
+    """
+    print("=" * 60)
+    print(f"📊 ĐÁNH GIÁ MODEL TRÊN {data_type.upper()} DATASET")
+    print("=" * 60)
+    
+    if not os.path.exists(model_path):
+        print(f"❌ Model không tồn tại: {model_path}")
+        return None
+    
+    # Load model
+    model = YOLO(model_path)
+    print(f"✓ Đã load model: {model_path}")
+    
+    # Tạo dataset.yaml nếu chưa có
+    dataset_yaml_path = os.path.join(CONFIG_DIR, 'dataset.yaml')
+    if not os.path.exists(dataset_yaml_path):
+        print("⚠️  dataset.yaml chưa tồn tại. Đang tạo...")
+        create_dataset_yaml()
+    
+    # Validate model
+    print(f"\n🔍 Đang đánh giá trên {data_type} dataset...\n")
+    
+    metrics = model.val(
+        data=dataset_yaml_path,
+        split=data_type,  # 'test' hoặc 'val'
+        save_json=True,
+        plots=True
+    )
+    
+    print("\n" + "=" * 60)
+    print("✅ ĐÁNH GIÁ HOÀN TẤT!")
+    print("=" * 60)
+    
+    return metrics
 
 # ==================== DỰ ĐOÁN ====================
 def predict_image(model, image_path, save_result=True):
     """
-    Dự đoán trên một ảnh với YOLOv8 Segmentation
+    Dự đoán trên một ảnh với YOLOv8 Detection
     
     Args:
-        model: YOLO segmentation model đã train
+        model: YOLO detection model đã train
         image_path: Đường dẫn đến ảnh
         save_result: Lưu kết quả hay không
     
@@ -378,7 +428,7 @@ def predict_image(model, image_path, save_result=True):
     # Dự đoán
     results = model(image, verbose=False)
     
-    # Lấy boxes và masks
+    # Lấy boxes
     boxes_arr = results[0].boxes.xyxy.cpu().numpy() if hasattr(results[0].boxes, 'xyxy') else np.array([])
     confs = results[0].boxes.conf.cpu().numpy() if hasattr(results[0].boxes, 'conf') else np.array([])
     cls_ids = results[0].boxes.cls.cpu().numpy().astype(int) if hasattr(results[0].boxes, 'cls') else np.array([])
@@ -409,7 +459,7 @@ def predict_image(model, image_path, save_result=True):
     
     # Hiển thị kết quả (với error handling cho headless env)
     try:
-        cv2.imshow("Prediction Result - YOLOv8-seg", image_with_prediction)
+        cv2.imshow("Prediction Result - YOLOv8 Detection", image_with_prediction)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
     except Exception as e:
@@ -428,41 +478,79 @@ def predict_image(model, image_path, save_result=True):
 # ==================== MAIN ====================
 if __name__ == "__main__":
     print("=" * 60)
-    print("🤖 SIGN LANGUAGE TRANSLATION - YOLOv8 SEGMENTATION")
+    print("🤖 SIGN LANGUAGE TRANSLATION - YOLOv8 DETECTION")
     print("=" * 60)
     print(f"📁 Base Directory: {BASE_DIR}")
-    print(f"📁 Dataset Directory: {DATASET_DIR}")
+    print(f"📁 Train Directory: {TRAIN_DIR}")
+    print(f"📁 Valid Directory: {VALID_DIR}")
+    print(f"📁 Test Directory: {TEST_DIR}")
     print(f"📁 Models Directory: {MODELS_DIR}")
-    print(f"🔧 Model: YOLOv8 Segmentation (yolov8n-seg.pt)")
+    print(f"🔧 Model: YOLOv8 Detection (yolov8n.pt)")
     print("=" * 60)
     
     # Menu lựa chọn
     print("\nChọn chức năng:")
     print("1. Tạo file dataset.yaml")
     print("2. Visualize dataset")
-    print("3. Train model (YOLOv8-seg)")
-    print("4. Predict trên ảnh")
+    print("3. Train model (YOLOv8 Detection)")
+    print("4. Evaluate model (Test dataset)")
+    print("5. Predict trên ảnh")
     print("0. Thoát")
     
     choice = input("\nNhập lựa chọn của bạn: ").strip()
     
     if choice == "1":
-        use_all = input("Dùng toàn bộ data cho training? (y/n, mặc định n): ").strip().lower() == 'y'
-        create_dataset_yaml(use_all=use_all)
+        create_dataset_yaml()
     
     elif choice == "2":
-        visualize_dataset()
+        print("\nChọn dataset:")
+        print("1. Train")
+        print("2. Valid")
+        print("3. Test")
+        data_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
+        
+        data_type_map = {"1": "train", "2": "valid", "3": "test"}
+        data_type = data_type_map.get(data_choice, "train")
+        
+        visualize_dataset(data_type=data_type)
     
     elif choice == "3":
+        print("\nChọn model size:")
+        print("1. YOLOv8n (nano - nhanh nhất, ít chính xác)")
+        print("2. YOLOv8s (small - cân bằng)")
+        print("3. YOLOv8m (medium - chính xác hơn)")
+        model_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
+        
+        model_map = {
+            "1": "yolov8n.pt",
+            "2": "yolov8s.pt",
+            "3": "yolov8m.pt"
+        }
+        model_name = model_map.get(model_choice, "yolov8n.pt")
+        
         epochs = int(input("Nhập số epochs (mặc định 50): ").strip() or 50)
         batch = int(input("Nhập batch size (mặc định 16): ").strip() or 16)
-        use_all = input("Dùng toàn bộ data cho training? (y/n, mặc định n): ").strip().lower() == 'y'
-        model, results = train_model(epochs=epochs, batch=batch, use_all=use_all)
+        
+        model, results = train_model(epochs=epochs, batch=batch, model_name=model_name)
     
     elif choice == "4":
         model_path = input("Nhập đường dẫn model (để trống để dùng best.pt): ").strip()
         if not model_path:
-            model_path = os.path.join(MODELS_DIR, 'sign_language_model', 'weights', 'best.pt')
+            model_path = os.path.join(MODELS_DIR, 'sign_language_detection', 'weights', 'best.pt')
+        
+        print("\nChọn dataset để đánh giá:")
+        print("1. Test")
+        print("2. Valid")
+        eval_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
+        
+        data_type = "test" if eval_choice == "1" else "val"
+        
+        evaluate_model(model_path, data_type=data_type)
+    
+    elif choice == "5":
+        model_path = input("Nhập đường dẫn model (để trống để dùng best.pt): ").strip()
+        if not model_path:
+            model_path = os.path.join(MODELS_DIR, 'sign_language_detection', 'weights', 'best.pt')
         
         image_path = input("Nhập đường dẫn ảnh: ").strip()
         

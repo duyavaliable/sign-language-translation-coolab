@@ -26,18 +26,23 @@ pip-wheel-metadata/
 # OS
 .DS_Store
 Thumbs.db
-
-# Large data / models / checkpoints (do NOT push)
+ 
+# Dataset folders
 dataset/
 data/
-models/
 train/
+valid/
+test/
+
+# Models and weights
+models/
 **/weights/
 **/*.pt
 **/*.pth
 **/*.ckpt
 **/*.onnx
 **/*.tflite
+**/*.h5
 
 # Jupyter notebook artifacts (if any)
 .ipynb_checkpoints/
@@ -55,3 +60,9 @@ secrets.json
 htmlcov/
 .mypy_cache/
 .pytest_cache/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
