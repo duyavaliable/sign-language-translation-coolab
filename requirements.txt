@@ -4,11 +4,14 @@ numpy>=1.24.0
 matplotlib>=3.7.0
 Pillow>=10.0.0
 
-# Deep Learning
-ultralytics>=8.0.0
+# Deep Learning - VLM (Vision Language Model)
+transformers>=4.35.0
 torch>=2.1.0
 torchvision>=0.16.0
+accelerate>=0.24.0
+
 
 # Build tools
 setuptools>=65.0.0
 wheel>=0.40.0
+tqdm>=4.65.0

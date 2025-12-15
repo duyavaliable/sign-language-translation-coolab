@@ -1,570 +1,293 @@
 # -*- coding: utf-8 -*-
 """
-Sign Language Translation - YOLOv8 Detection
-Optimized for Local Environment
+Sign Language Translation - VLM (BLIP-2 only)
+Giữ lại: 1) Test 1 video (zero-shot BLIP-2)  3) Visualize results  5) Config frame sampling
 """
-
 import os
 import cv2
+import json
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # headless backend, không cần Tcl/Tk
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from ultralytics import YOLO
+from PIL import Image
 
 # ==================== CẤU HÌNH ĐƯỜNG DẪN ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TRAIN_DIR = os.path.join(BASE_DIR, 'train')        # Thư mục train (images + labels)
-VALID_DIR = os.path.join(BASE_DIR, 'valid')        # Thư mục validation
-TEST_DIR = os.path.join(BASE_DIR, 'test')          # Thư mục test
-MODELS_DIR = os.path.join(BASE_DIR, 'models')      # Lưu trained models
-CONFIG_DIR = BASE_DIR                               # dataset.yaml sẽ lưu ở root
+TRAIN_DIR = os.path.join(BASE_DIR, 'train')
+VALID_DIR = os.path.join(BASE_DIR, 'valid')
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 
-# ==================== KHỞI TẠO MODEL ====================
-print("🔄 Đang khởi tạo YOLO model...")
-yolo_model = None  # Sẽ load khi cần thiết
-current_model_path = None  # Track model đang dùng
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
-def get_yolo_model(model_path='yolov8n.pt'):
-    """
-    Lazy loading YOLO model với khả năng reload
-    
-    Args:
-        model_path: Đường dẫn đến YOLO model (mặc định: yolov8n.pt - Detection)
-    
-    Returns:
-        model: YOLO model instance
-    """
-    global yolo_model, current_model_path
-    
-    # Reload nếu model_path khác
-    if yolo_model is None or current_model_path != model_path:
-        if not os.path.exists(model_path):
-            print(f"⚠️ Warning: Model '{model_path}' không tồn tại.")
-            print(f"   Ultralytics sẽ tự động tải pretrained model từ internet.")
-        
-        yolo_model = YOLO(model_path)
-        current_model_path = model_path
-        print(f"✓ Đã tải YOLOv8 Detection model: {model_path}")
-    
-    return yolo_model
+# ==================== VLM CONFIGURATION ====================
+VLM_CONFIG = {
+    'model_type': 'blip2',  # fixed to BLIP-2
+    'device': 'cuda' if os.environ.get('USE_CUDA') == '1' else 'cpu',
+    'max_tokens': 100,
+    'temperature': 0.3,
+    'frame_sample_rate': 5,  # Lấy 1 frame mỗi N frames
+    'max_frames': 10,  # Số frame tối đa để xử lý mỗi video
+}
 
-# ==================== CHỨC NĂNG XỬ LÝ ẢNH ====================
-def extract_hand_region(image, model_path='yolov8n.pt'):
-    """
-    Trích xuất vùng tay từ ảnh sử dụng YOLO detection
-    
-    Args:
-        image: Ảnh đầu vào (numpy array)
-        model_path: Đường dẫn đến YOLO detection model
-    
-    Returns:
-        hand_box: Vùng ảnh chứa bàn tay hoặc ảnh trống nếu không phát hiện
-    """
-    model = get_yolo_model(model_path)
-    results = model(image, verbose=False)
-    
-    # Lấy boxes từ detection results
-    if hasattr(results[0], 'boxes') and len(results[0].boxes) > 0:
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        
-        # Chọn box lớn nhất (giả sử là tay)
-        areas = [(x2-x1)*(y2-y1) for x1, y1, x2, y2 in boxes]
-        idx = areas.index(max(areas))
-        x1, y1, x2, y2 = boxes[idx].astype(int)
-        hand_box = image[y1:y2, x1:x2]
-        
-        # Vẽ bounding box
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(image, "Hand Detected (YOLOv8)", (x1, y1-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        return hand_box
-    
-    # Không phát hiện tay
-    cv2.putText(image, "No hand detected", (20, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    return np.zeros((64, 64, 3), dtype=np.uint8)
+print("=" * 60)
+print("🤖 SIGN LANGUAGE TRANSLATION - VLM (BLIP-2 ONLY)")
+print("=" * 60)
+print(f"📁 Base Directory: {BASE_DIR}")
+print(f"📁 Train Directory: {TRAIN_DIR}")
+print(f"📁 Valid Directory: {VALID_DIR}")
+print(f"🔧 VLM Type: {VLM_CONFIG['model_type'].upper()}")
+print(f"🖥️  Device: {VLM_CONFIG['device'].upper()}")
+print(f"🎬 Frame Sample Rate: {VLM_CONFIG['frame_sample_rate']}")
+print("=" * 60)
 
-def draw_prediction(image, sign, confidence):
-    """
-    Vẽ kết quả dự đoán lên ảnh
-    
-    Args:
-        image: Ảnh gốc
-        sign: Ký hiệu được dự đoán
-        confidence: Độ tin cậy
-    
-    Returns:
-        result: Ảnh đã vẽ kết quả
-    """
-    result = image.copy()
-    
-    # Vẽ nền cho text
-    overlay = result.copy()
-    cv2.rectangle(overlay, (10, 10), (300, 140), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.6, result, 0.4, 0, result)
-    
-    # Xác định text và màu
-    if sign == "?" or confidence < 0.5:
-        text = "Waiting for hand gesture..."
-        color = (0, 0, 255)  # Red
-    else:
-        text = f"Sign: {sign} ({confidence:.2f})"
-        color = (0, 255, 0)  # Green
-    
-    cv2.putText(result, text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-    
-    # Vẽ khung hướng dẫn đặt tay
-    height, width = image.shape[:2]
-    roi_size = 300
-    roi_x = width // 2 - roi_size // 2
-    roi_y = height // 2 - roi_size // 2
-    cv2.rectangle(result, (roi_x, roi_y), (roi_x + roi_size, roi_y + roi_size),
-                 (255, 0, 0), 2)
-    
-    return result
+# ==================== VLM MODEL LOADER (BLIP-2 ONLY) ====================
+vlm_model = None
+vlm_processor = None
 
-# ==================== HIỂN THỊ DATASET ====================
-def visualize_dataset(data_type='train', num_samples=3):
-    """
-    Hiển thị mẫu từ dataset
-    
-    Args:
-        data_type: Loại dataset ('train', 'valid', hoặc 'test')
-        num_samples: Số lượng mẫu hiển thị
-    """
-    # Xác định thư mục dựa trên data_type
-    if data_type == 'train':
-        data_dir = TRAIN_DIR
-    elif data_type == 'valid':
-        data_dir = VALID_DIR
-    elif data_type == 'test':
-        data_dir = TEST_DIR
-    else:
-        print(f"❌ data_type không hợp lệ: {data_type}. Chọn 'train', 'valid', hoặc 'test'.")
-        return
-    
-    images_dir = os.path.join(data_dir, 'images')
-    labels_dir = os.path.join(data_dir, 'labels')
-    
-    if not os.path.exists(images_dir):
-        print(f"❌ Thư mục {images_dir} không tồn tại.")
-        return
-    
-    # Lấy danh sách ảnh
-    image_files = [f for f in os.listdir(images_dir) 
-                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    
-    if not image_files:
-        print(f"❌ Không tìm thấy ảnh trong {images_dir}")
-        return
-    
-    print(f"📁 Dataset: {data_type.upper()}")
-    print(f"📁 Images directory: {images_dir}")
-    print(f"📁 Labels directory: {labels_dir}")
-    print(f"📊 Total images: {len(image_files)}")
-    
-    # Chọn mẫu ngẫu nhiên
-    import random
-    samples = random.sample(image_files, min(num_samples, len(image_files)))
-    
-    # Hiển thị
-    fig = plt.figure(figsize=(15, 5))
-    
-    for i, image_name in enumerate(samples):
-        ax = fig.add_subplot(1, len(samples), i + 1)
-        
-        image_path = os.path.join(images_dir, image_name)
-        img = cv2.imread(image_path)
-        
-        if img is not None:
-            if len(img.shape) == 3:
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            ax.imshow(img, cmap='gray' if len(img.shape) == 2 else None)
-            ax.set_title(f"{image_name[:20]}...")
-            ax.axis('off')
-    
-    plt.tight_layout()
-    plt.show()
-    print(f"✓ Hiển thị {len(samples)} mẫu từ {data_type} dataset")
+def load_blip2_model():
+    """Load BLIP-2 model (Salesforce)"""
+    from transformers import Blip2Processor, Blip2ForConditionalGeneration
+    import torch
 
-# ==================== TẠO FILE CẤU HÌNH ====================
-def create_dataset_yaml():
-    """
-    Tạo file dataset.yaml cho YOLO Detection training
-    
-    Returns:
-        dataset_yaml_path: Đường dẫn đến file yaml đã tạo
-    """
-    dataset_yaml_path = os.path.join(CONFIG_DIR, 'dataset.yaml')
-    
-    # Kiểm tra các thư mục tồn tại
-    train_images = os.path.join(TRAIN_DIR, 'images')
-    train_labels = os.path.join(TRAIN_DIR, 'labels')
-    valid_images = os.path.join(VALID_DIR, 'images')
-    valid_labels = os.path.join(VALID_DIR, 'labels')
-    
-    # Cảnh báo nếu thiếu thư mục
-    if not os.path.exists(train_images):
-        print(f"⚠️  WARNING: {train_images} không tồn tại!")
-    if not os.path.exists(train_labels):
-        print(f"⚠️  WARNING: {train_labels} không tồn tại!")
-    if not os.path.exists(valid_images):
-        print(f"⚠️  WARNING: {valid_images} không tồn tại!")
-    if not os.path.exists(valid_labels):
-        print(f"⚠️  WARNING: {valid_labels} không tồn tại!")
-    
-    dataset_yaml_content = f"""\
-# YOLOv8 Detection Dataset Configuration
-# Sign Language Translation - 22 ASL Letters
-
-# Đường dẫn tuyệt đối đến root directory
-path: {BASE_DIR}
-
-# Đường dẫn tương đối từ path
-train: train/images
-val: valid/images
-
-# Number of classes
-nc: 22
-
-# Class names (ASL letters, excluding F and J)
-names:
-  - A
-  - B
-  - C
-  - D
-  - E
-  - G
-  - H
-  - I
-  - K
-  - L
-  - M
-  - N
-  - O
-  - P
-  - Q
-  - R
-  - S
-  - T
-  - U
-  - V
-  - X
-  - Y
-"""
-    
-    with open(dataset_yaml_path, "w", encoding='utf-8') as f:
-        f.write(dataset_yaml_content)
-    
-    print(f"✓ Đã tạo dataset.yaml tại: {dataset_yaml_path}")
-    print(f"  - Training path: train/images & train/labels")
-    print(f"  - Validation path: valid/images & valid/labels")
-    print(f"  - Task: Detection (bounding box)")
-    
-    return dataset_yaml_path
-
-# ==================== TRAINING ====================
-def train_model(epochs=50, batch=16, imgsz=640, model_name='yolov8n.pt'):
-    """
-    Huấn luyện YOLO Detection model
-    
-    Args:
-        epochs: Số epochs training
-        batch: Batch size
-        imgsz: Kích thước ảnh input
-        model_name: Tên pretrained model 
-                   - 'yolov8n.pt' (nano - nhanh)
-                   - 'yolov8s.pt' (small)
-                   - 'yolov8m.pt' (medium)
-                   - 'yolov8l.pt' (large)
-                   - 'yolov8x.pt' (xlarge - chính xác nhất)
-    
-    Returns:
-        model: YOLO model đã train
-        results: Kết quả training
-    """
-    print("=" * 60)
-    print(f"🚀 BẮT ĐẦU TRAINING YOLOv8 DETECTION MODEL")
-    print("=" * 60)
-    
-    # Tạo dataset.yaml
-    dataset_yaml_path = create_dataset_yaml()
-    
-    # Load pretrained model
-    model = YOLO(model_name)
-    print(f"\n✓ Đã load pretrained model: {model_name}")
-    print(f"  - Task: Detection (Bounding Box)")
-    print(f"  - Architecture: YOLOv8")
-    
-    # Kiểm tra dataset structure
-    train_images = os.path.join(TRAIN_DIR, 'images')
-    train_labels = os.path.join(TRAIN_DIR, 'labels')
-    valid_images = os.path.join(VALID_DIR, 'images')
-    valid_labels = os.path.join(VALID_DIR, 'labels')
-    
-    if not os.path.exists(train_images):
-        raise FileNotFoundError(f"❌ Không tìm thấy: {train_images}")
-    if not os.path.exists(train_labels):
-        raise FileNotFoundError(f"❌ Không tìm thấy: {train_labels}")
-    if not os.path.exists(valid_images):
-        print(f"⚠️  WARNING: {valid_images} không tồn tại!")
-        print("   Training sẽ dùng train data để validation.")
-    
-    # Đếm số ảnh và labels
-    num_train_images = len([f for f in os.listdir(train_images) 
-                           if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
-    num_train_labels = len([f for f in os.listdir(train_labels) 
-                           if f.endswith('.txt')])
-    
-    num_valid_images = 0
-    if os.path.exists(valid_images):
-        num_valid_images = len([f for f in os.listdir(valid_images) 
-                               if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
-    
-    print(f"\n📊 Dataset Statistics:")
-    print(f"  - Training images: {num_train_images}")
-    print(f"  - Training labels: {num_train_labels}")
-    print(f"  - Validation images: {num_valid_images}")
-    print(f"  - Classes: 22 (ASL letters)")
-    
-    print(f"\n⚙️  Training Configuration:")
-    print(f"  - Epochs: {epochs}")
-    print(f"  - Batch size: {batch}")
-    print(f"  - Image size: {imgsz}")
-    print(f"  - Task: detect (bounding box)")
-    
-    # Train model
-    print("\n" + "=" * 60)
-    print("🏋️  STARTING TRAINING...")
-    print("=" * 60 + "\n")
-    
-    results = model.train(
-        data=dataset_yaml_path,
-        epochs=epochs,
-        imgsz=imgsz,
-        batch=batch,
-        project=MODELS_DIR,
-        name='sign_language_detection',
-        task='detect',
-        patience=10,  # Early stopping
-        save=True,
-        plots=True
+    print("\n🔄 Loading BLIP-2 model...")
+    processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
+    model = Blip2ForConditionalGeneration.from_pretrained(
+        "Salesforce/blip2-opt-2.7b",
+        torch_dtype=torch.float16 if VLM_CONFIG['device'] == 'cuda' else torch.float32
     )
-    
-    print("\n" + "=" * 60)
-    print("✅ TRAINING HOÀN TẤT!")
-    print("=" * 60)
-    print(f"📁 Model được lưu tại: {MODELS_DIR}/sign_language_detection/weights/best.pt")
-    
-    return model, results
 
-# ==================== ĐÁNH GIÁ MODEL ====================
-def evaluate_model(model_path, data_type='test'):
-    """
-    Đánh giá model trên test dataset
-    
-    Args:
-        model_path: Đường dẫn đến trained model
-        data_type: Loại dataset để đánh giá ('test' hoặc 'val')
-    
-    Returns:
-        metrics: Kết quả đánh giá
-    """
-    print("=" * 60)
-    print(f"📊 ĐÁNH GIÁ MODEL TRÊN {data_type.upper()} DATASET")
-    print("=" * 60)
-    
-    if not os.path.exists(model_path):
-        print(f"❌ Model không tồn tại: {model_path}")
-        return None
-    
-    # Load model
-    model = YOLO(model_path)
-    print(f"✓ Đã load model: {model_path}")
-    
-    # Tạo dataset.yaml nếu chưa có
-    dataset_yaml_path = os.path.join(CONFIG_DIR, 'dataset.yaml')
-    if not os.path.exists(dataset_yaml_path):
-        print("⚠️  dataset.yaml chưa tồn tại. Đang tạo...")
-        create_dataset_yaml()
-    
-    # Validate model
-    print(f"\n🔍 Đang đánh giá trên {data_type} dataset...\n")
-    
-    metrics = model.val(
-        data=dataset_yaml_path,
-        split=data_type,  # 'test' hoặc 'val'
-        save_json=True,
-        plots=True
-    )
-    
-    print("\n" + "=" * 60)
-    print("✅ ĐÁNH GIÁ HOÀN TẤT!")
-    print("=" * 60)
-    
-    return metrics
+    if VLM_CONFIG['device'] == 'cuda':
+        model = model.to('cuda')
 
-# ==================== DỰ ĐOÁN ====================
-def predict_image(model, image_path, save_result=True):
-    """
-    Dự đoán trên một ảnh với YOLOv8 Detection
-    
-    Args:
-        model: YOLO detection model đã train
-        image_path: Đường dẫn đến ảnh
-        save_result: Lưu kết quả hay không
-    
-    Returns:
-        image_with_prediction: Ảnh với kết quả dự đoán
-    """
-    image = cv2.imread(image_path)
-    
-    if image is None:
-        print(f"❌ Lỗi: Không thể đọc ảnh từ {image_path}")
-        return None
-    
-    # Dự đoán
-    results = model(image, verbose=False)
-    
-    # Lấy boxes
-    boxes_arr = results[0].boxes.xyxy.cpu().numpy() if hasattr(results[0].boxes, 'xyxy') else np.array([])
-    confs = results[0].boxes.conf.cpu().numpy() if hasattr(results[0].boxes, 'conf') else np.array([])
-    cls_ids = results[0].boxes.cls.cpu().numpy().astype(int) if hasattr(results[0].boxes, 'cls') else np.array([])
-    
-    image_with_prediction = image.copy()
-    
-    if boxes_arr.size > 0:
-        for i, box in enumerate(boxes_arr):
-            x1, y1, x2, y2 = box.astype(int)
-            confidence = float(confs[i]) if i < len(confs) else 0.0
-            class_id = int(cls_ids[i]) if i < len(cls_ids) else -1
-            predicted_sign = model.names[class_id] if (hasattr(model, 'names') and class_id in model.names) else f"Class {class_id}"
-            
-            # Vẽ bounding box
-            color = (0, 255, 0)
-            cv2.rectangle(image_with_prediction, (x1, y1), (x2, y2), color, 2)
-            
-            # Vẽ text
-            text = f"{predicted_sign}: {confidence:.2f}"
-            cv2.putText(image_with_prediction, text, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        
-        print(f"✓ Phát hiện {len(boxes_arr)} đối tượng")
+    print("✓ BLIP-2 model loaded successfully!")
+    return model, processor
+
+def get_vlm_model():
+    """Lazy loading BLIP-2 only"""
+    global vlm_model, vlm_processor
+    if vlm_model is None:
+        try:
+            vlm_model, vlm_processor = load_blip2_model()
+        except Exception as e:
+            print(f"❌ Error loading BLIP-2: {e}")
+            print("💡 Install: pip install transformers accelerate")
+            raise
+    return vlm_model, vlm_processor
+
+# ==================== VIDEO PROCESSING ====================
+def extract_frames_from_video(video_path, sample_rate=None, max_frames=None):
+    if sample_rate is None:
+        sample_rate = VLM_CONFIG['frame_sample_rate']
+    if max_frames is None:
+        max_frames = VLM_CONFIG['max_frames']
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+    frames = []
+    frame_count = 0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = int(cap.get(cv2.CAP_PROP_FPS) or 0)
+    print(f"  📹 Video info: {total_frames} frames, {fps} FPS")
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_count % sample_rate == 0:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(frame_rgb)
+            frames.append(pil_image)
+            if len(frames) >= max_frames:
+                break
+        frame_count += 1
+    cap.release()
+    print(f"  ✓ Extracted {len(frames)} frames")
+    return frames
+
+def get_middle_frame(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    middle_frame_idx = max(0, total_frames // 2)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, middle_frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise ValueError(f"Cannot read frame from video: {video_path}")
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(frame_rgb)
+
+# ==================== PROMPT ====================
+SIGN_LANGUAGE_PROMPT = """
+You are an expert in Vietnamese Sign Language (VSL).
+Look at the hand gesture in this image and identify which sign language word or phrase it represents.
+
+Analyze the hand shape, position, and movement to determine the meaning.
+
+Respond with the Vietnamese word or phrase that best matches the sign language gesture shown.
+If you cannot determine the sign with confidence, respond with "UNKNOWN".
+
+Sign:"""
+
+def create_sign_language_prompt(custom_prompt=None):
+    return custom_prompt if custom_prompt else SIGN_LANGUAGE_PROMPT
+
+# ==================== PREDICTION ====================
+def predict_with_vlm(image, prompt=None):
+    model, processor = get_vlm_model()
+    if isinstance(image, str):
+        image = Image.open(image).convert('RGB')
+    elif isinstance(image, np.ndarray):
+        image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    prompt_text = create_sign_language_prompt(prompt)
+    prediction = predict_with_transformer_vlm(model, processor, image, prompt_text)
+    return prediction.strip(), 0.85
+
+def predict_with_transformer_vlm(model, processor, image, prompt):
+    import torch
+    inputs = processor(images=image, text=prompt, return_tensors="pt")
+    if VLM_CONFIG['device'] == 'cuda':
+        inputs = {k: v.to('cuda') for k, v in inputs.items()}
+    with torch.no_grad():
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=VLM_CONFIG['max_tokens'],
+            temperature=VLM_CONFIG['temperature'],
+            do_sample=False
+        )
+    generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    return generated_text
+
+def predict_video_multi_frame(video_path, use_all_frames=False):
+    if use_all_frames:
+        frames = extract_frames_from_video(video_path)
+        predictions = []
+        for i, frame in enumerate(frames):
+            print(f"  Processing frame {i+1}/{len(frames)}...")
+            pred, conf = predict_with_vlm(frame)
+            predictions.append((pred, conf))
+        pred_counts = {}
+        for pred, conf in predictions:
+            pred_counts[pred] = pred_counts.get(pred, 0) + 1
+        final_prediction = max(pred_counts, key=pred_counts.get)
+        confidence = pred_counts[final_prediction] / len(predictions)
+        return final_prediction, confidence, predictions
     else:
-        print("⚠️ Không phát hiện đối tượng nào")
-        cv2.putText(image_with_prediction, "No objects detected", (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    
-    # Hiển thị kết quả (với error handling cho headless env)
+        frame = get_middle_frame(video_path)
+        prediction, confidence = predict_with_vlm(frame)
+        return prediction, confidence, [(prediction, confidence)]
+
+# ==================== SINGLE VIDEO (save JSON) ====================
+def predict_single_video(video_path, use_all_frames=False):
+    print("=" * 60)
+    print("🔍 SINGLE VIDEO PREDICTION (BLIP-2 zero-shot)")
+    print("=" * 60)
+    if not os.path.exists(video_path):
+        print(f"❌ File không tồn tại: {video_path}")
+        return None, 0.0
+    print(f"📹 Video: {os.path.basename(video_path)}")
     try:
-        cv2.imshow("Prediction Result - YOLOv8 Detection", image_with_prediction)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    except Exception as e:
-        print(f"ℹ️  GUI không khả dụng (headless environment): {e}")
-        print("   Kết quả sẽ được lưu vào file thay vì hiển thị.")
-    
-    # Lưu kết quả
-    if save_result:
-        os.makedirs(MODELS_DIR, exist_ok=True)
-        output_path = os.path.join(MODELS_DIR, 'prediction_result.jpg')
-        cv2.imwrite(output_path, image_with_prediction)
-        print(f"✓ Đã lưu kết quả tại: {output_path}")
-    
-    return image_with_prediction
-
-# ==================== MAIN ====================
-if __name__ == "__main__":
-    print("=" * 60)
-    print("🤖 SIGN LANGUAGE TRANSLATION - YOLOv8 DETECTION")
-    print("=" * 60)
-    print(f"📁 Base Directory: {BASE_DIR}")
-    print(f"📁 Train Directory: {TRAIN_DIR}")
-    print(f"📁 Valid Directory: {VALID_DIR}")
-    print(f"📁 Test Directory: {TEST_DIR}")
-    print(f"📁 Models Directory: {MODELS_DIR}")
-    print(f"🔧 Model: YOLOv8 Detection (yolov8n.pt)")
-    print("=" * 60)
-    
-    # Menu lựa chọn
-    print("\nChọn chức năng:")
-    print("1. Tạo file dataset.yaml")
-    print("2. Visualize dataset")
-    print("3. Train model (YOLOv8 Detection)")
-    print("4. Evaluate model (Test dataset)")
-    print("5. Predict trên ảnh")
-    print("0. Thoát")
-    
-    choice = input("\nNhập lựa chọn của bạn: ").strip()
-    
-    if choice == "1":
-        create_dataset_yaml()
-    
-    elif choice == "2":
-        print("\nChọn dataset:")
-        print("1. Train")
-        print("2. Valid")
-        print("3. Test")
-        data_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
-        
-        data_type_map = {"1": "train", "2": "valid", "3": "test"}
-        data_type = data_type_map.get(data_choice, "train")
-        
-        visualize_dataset(data_type=data_type)
-    
-    elif choice == "3":
-        print("\nChọn model size:")
-        print("1. YOLOv8n (nano - nhanh nhất, ít chính xác)")
-        print("2. YOLOv8s (small - cân bằng)")
-        print("3. YOLOv8m (medium - chính xác hơn)")
-        model_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
-        
-        model_map = {
-            "1": "yolov8n.pt",
-            "2": "yolov8s.pt",
-            "3": "yolov8m.pt"
+        prediction, confidence, frame_preds = predict_video_multi_frame(video_path, use_all_frames=use_all_frames)
+        print(f"\n✅ Prediction: {prediction}")
+        print(f"📊 Confidence: {confidence:.2%}")
+        # save result JSON
+        result = {
+            'video': os.path.basename(video_path),
+            'prediction': prediction,
+            'confidence': confidence,
+            'frame_predictions': [{'pred': p, 'conf': c} for p, c in frame_preds]
         }
-        model_name = model_map.get(model_choice, "yolov8n.pt")
-        
-        epochs = int(input("Nhập số epochs (mặc định 50): ").strip() or 50)
-        batch = int(input("Nhập batch size (mặc định 16): ").strip() or 16)
-        
-        model, results = train_model(epochs=epochs, batch=batch, model_name=model_name)
-    
-    elif choice == "4":
-        model_path = input("Nhập đường dẫn model (để trống để dùng best.pt): ").strip()
-        if not model_path:
-            model_path = os.path.join(MODELS_DIR, 'sign_language_detection', 'weights', 'best.pt')
-        
-        print("\nChọn dataset để đánh giá:")
-        print("1. Test")
-        print("2. Valid")
-        eval_choice = input("Nhập lựa chọn (mặc định 1): ").strip() or "1"
-        
-        data_type = "test" if eval_choice == "1" else "val"
-        
-        evaluate_model(model_path, data_type=data_type)
-    
-    elif choice == "5":
-        model_path = input("Nhập đường dẫn model (để trống để dùng best.pt): ").strip()
-        if not model_path:
-            model_path = os.path.join(MODELS_DIR, 'sign_language_detection', 'weights', 'best.pt')
-        
-        image_path = input("Nhập đường dẫn ảnh: ").strip()
-        
-        if os.path.exists(model_path) and os.path.exists(image_path):
-            model = YOLO(model_path)
-            predict_image(model, image_path)
+        out = os.path.join(RESULTS_DIR, f'vlm_pred_{os.path.splitext(os.path.basename(video_path))[0]}.json')
+        with open(out, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        print(f"💾 Result JSON saved to: {out}")
+        # also save annotated middle frame image
+        try:
+            middle_frame = get_middle_frame(video_path)
+            result_img = np.array(middle_frame)
+            result_img = cv2.cvtColor(result_img, cv2.COLOR_RGB2BGR)
+            text = f"VSL Sign: {prediction}"
+            cv2.putText(result_img, text, (20, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            img_out = os.path.join(RESULTS_DIR, f'prediction_{os.path.basename(video_path)}.jpg')
+            cv2.imwrite(img_out, result_img)
+            print(f"💾 Annotated image saved to: {img_out}")
+        except Exception:
+            pass
+        return prediction, confidence
+    except Exception as e:
+        print(f"❌ Error during prediction: {e}")
+        return None, 0.0
+
+# ==================== VISUALIZE ====================
+def visualize_video_predictions_from_file(result_file, num_display=1):
+    """
+    Hiển thị 1 result JSON file (saved by predict_single_video)
+    """
+    path = os.path.join(RESULTS_DIR, result_file)
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+    with open(path, 'r', encoding='utf-8') as f:
+        result = json.load(f)
+    video_name = result.get('video')
+    video_path = os.path.join(VALID_DIR, 'vid', video_name)
+    if not os.path.exists(video_path):
+        video_path = os.path.join(TRAIN_DIR, 'vid', video_name)
+    try:
+        frame = get_middle_frame(video_path)
+        plt.figure(figsize=(6,6))
+        plt.imshow(frame)
+        title = f"Pred: {result.get('prediction')} ({result.get('confidence'):.2%})"
+        plt.title(title, color='green', fontweight='bold')
+        plt.axis('off')
+        out = os.path.join(RESULTS_DIR, f'viz_{os.path.splitext(result_file)[0]}.png')
+        plt.savefig(out, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"✓ Visualization saved to: {out}")
+    except Exception as e:
+        print(f"❌ Visualization error: {e}")
+
+# ==================== CLI (options: 1,3,5,0) ====================
+if __name__ == "__main__":
+    print("\nChọn chức năng:")
+    print("1. Test VLM trên một video (zero-shot BLIP-2)")
+    print("3. Visualize prediction từ file kết quả (.json)")
+    print("5. Config frame sampling")
+    print("0. Thoát")
+    choice = input("\nNhập lựa chọn: ").strip()
+    if choice == "1":
+        video_path = input("Nhập đường dẫn video: ").strip()
+        use_all = input("Xử lý tất cả frames? (y/n, mặc định n): ").strip().lower() == 'y'
+        predict_single_video(video_path, use_all_frames=use_all)
+    elif choice == "3":
+        result_files = [f for f in os.listdir(RESULTS_DIR) if f.endswith('.json')]
+        if not result_files:
+            print("❌ Không có file kết quả nào!")
         else:
-            if not os.path.exists(model_path):
-                print(f"❌ Model không tồn tại: {model_path}")
-            if not os.path.exists(image_path):
-                print(f"❌ Ảnh không tồn tại: {image_path}")
-    
+            print("\nFile kết quả có sẵn:")
+            for i, f in enumerate(result_files):
+                print(f"{i+1}. {f}")
+            try:
+                file_choice = int(input("Chọn file: ").strip()) - 1
+                if 0 <= file_choice < len(result_files):
+                    visualize_video_predictions_from_file(result_files[file_choice])
+                else:
+                    print("❌ Lựa chọn không hợp lệ")
+            except Exception:
+                print("❌ Lựa chọn không hợp lệ")
+    elif choice == "5":
+        try:
+            rate = int(input(f"Frame sample rate (hiện tại: {VLM_CONFIG['frame_sample_rate']}): ").strip() or VLM_CONFIG['frame_sample_rate'])
+            max_f = int(input(f"Max frames per video (hiện tại: {VLM_CONFIG['max_frames']}): ").strip() or VLM_CONFIG['max_frames'])
+            VLM_CONFIG['frame_sample_rate'] = max(1, rate)
+            VLM_CONFIG['max_frames'] = max(1, max_f)
+            print(f"✓ Updated: Sample every {VLM_CONFIG['frame_sample_rate']} frames, max {VLM_CONFIG['max_frames']} frames per video")
+        except Exception:
+            print("❌ Input không hợp lệ")
     elif choice == "0":
         print("👋 Tạm biệt!")
-    
     else:
         print("❌ Lựa chọn không hợp lệ!")
