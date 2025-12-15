@@ -66,3 +66,7 @@ htmlcov/
 *.bak
 *.swp
 *~
+
+# Ignore runtime results and exported JSONs
+results/
+results/*.json
