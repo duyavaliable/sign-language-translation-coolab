@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
-Sign Language Training - DistilBERT + Multi-frame
-Train model từ scratch với DistilBERT encoder + CNN vision encoder
+Sign Language Recognition - Video-to-Text (Phrase Classification)
+Nhận diện video VSL → từ/cụm từ tiếng Việt (mỗi phrase = 1 class)
 """
 
 import os
@@ -8,13 +9,6 @@ import json
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import (
-    DistilBertTokenizer,
-    DistilBertModel,
-    get_linear_schedule_with_warmup
-)
-from torch.optim import AdamW  
-from PIL import Image
 import cv2
 import numpy as np
 from tqdm import tqdm
@@ -23,48 +17,45 @@ from tqdm import tqdm
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRAIN_DIR = os.path.join(BASE_DIR, 'train')
 VALID_DIR = os.path.join(BASE_DIR, 'valid')
+TEST_DIR = os.path.join(BASE_DIR, 'test')
 MODELS_DIR = os.path.join(BASE_DIR, 'models')
 RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-TRAIN_CONFIG = {
-    'device': 'cpu',  # CPU only
-    'batch_size': 2,  # Nhỏ cho CPU
-    'epochs': 20,
-    'learning_rate': 2e-5,
-    'max_length': 128,
+RECOGNITION_CONFIG = {
+    'device': 'cpu',
+    'batch_size': 4,
+    'epochs': 50,
+    'learning_rate': 1e-3,
     
-    # Multi-frame config
-    'frame_sample_rate': 10,  # Lấy 1 frame mỗi 10 frames
-    'max_frames': 5,  # 5 frames/video (cố định)
-    'image_size': 224,
+    # Multi-frame sampling
+    'frame_sample_rate': 5,
+    'max_frames': 8,
+    'image_size': 128,
     
     # Model architecture
-    'text_encoder': 'distilbert-base-uncased',  # CPU-friendly
-    'vision_hidden_dim': 128,
-    'fusion_dim': 256,
+    'cnn_hidden_dims': [32, 64, 128, 256],
+    'lstm_hidden_dim': 256,
+    'lstm_layers': 2,
+    'dropout': 0.5,
 }
 
 print("=" * 60)
-print("🎓 SIGN LANGUAGE TRAINING - DistilBERT + Multi-frame")
+print("🎓 SIGN LANGUAGE RECOGNITION - Phrase Classification")
 print("=" * 60)
-print(f"📁 Train Directory: {TRAIN_DIR}")
-print(f"📁 Valid Directory: {VALID_DIR}")
-print(f"🔧 Model: DistilBERT + CNN")
-print(f"🖥️  Device: {TRAIN_CONFIG['device'].upper()}")
-print(f"🎬 Frames per video: {TRAIN_CONFIG['max_frames']} (fixed)")
-print(f"📊 Batch Size: {TRAIN_CONFIG['batch_size']}")
+print(f"🔧 Model: CNN + LSTM → Classification (1 phrase = 1 class)")
+print(f"🖥️  Device: {RECOGNITION_CONFIG['device'].upper()}")
 print("=" * 60)
 
-# ==================== DATASET (MULTI-FRAME) ====================
-class MultiFrameSignLanguageDataset(Dataset):
-    """Dataset với MULTI-FRAME support"""
+
+# ==================== DATASET ====================
+class SignLanguagePhraseDataset(Dataset):
+    """Dataset nhận diện cụm từ (mỗi phrase là 1 class)"""
     
-    def __init__(self, data_dir, tokenizer, config=TRAIN_CONFIG):
+    def __init__(self, data_dir, config=RECOGNITION_CONFIG):
         self.data_dir = data_dir
-        self.tokenizer = tokenizer
         self.config = config
         
         self.videos_dir = os.path.join(data_dir, 'vid')
@@ -74,9 +65,9 @@ class MultiFrameSignLanguageDataset(Dataset):
         self.video_files = [f for f in os.listdir(self.videos_dir)
                             if f.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))]
         
-        # Load labels
+        # Load labels (mỗi phrase nguyên vẹn là 1 class)
         self.labels = {}
-        self.unique_labels = set()
+        all_phrases = set()
         
         for video_name in self.video_files:
             base_name = os.path.splitext(video_name)[0]
@@ -84,35 +75,34 @@ class MultiFrameSignLanguageDataset(Dataset):
             
             if os.path.exists(label_file):
                 with open(label_file, 'r', encoding='utf-8') as f:
-                    label = f.read().strip()
-                    self.labels[video_name] = label
-                    self.unique_labels.add(label)
+                    phrase = f.read().strip()  # "Buổi sáng", "Cảm ơn", "Tôi"
+                    self.labels[video_name] = phrase
+                    all_phrases.add(phrase)
         
         # Filter videos có label
         self.video_files = [v for v in self.video_files if v in self.labels]
         
-        # Create label mappings
-        self.label2id = {label: idx for idx, label in enumerate(sorted(self.unique_labels))}
-        self.id2label = {idx: label for label, idx in self.label2id.items()}
+        # Build phrase → ID mapping (mỗi phrase nguyên vẹn = 1 class)
+        self.phrase2id = {phrase: idx for idx, phrase in enumerate(sorted(all_phrases))}
+        self.id2phrase = {idx: phrase for phrase, idx in self.phrase2id.items()}
+        self.num_classes = len(self.phrase2id)
         
-        print(f"📊 Dataset: {len(self.video_files)} videos, {len(self.unique_labels)} classes")
-        print(f"📝 Classes: {list(self.label2id.keys())[:10]}...")
+        print(f"📊 Dataset: {len(self.video_files)} videos")
+        print(f"📝 Number of classes (phrases): {self.num_classes}")
+        print(f"📝 Sample phrases: {list(all_phrases)[:10]}")
+        print(f"📝 Class mapping examples:")
+        for phrase, idx in list(self.phrase2id.items())[:5]:
+            print(f"   '{phrase}' → class {idx}")
     
     def __len__(self):
         return len(self.video_files)
     
-    def extract_multi_frames(self, video_path):
-        """
-        Trích xuất NHIỀU frames từ video (fixed number)
-        
-        Returns:
-            frames: Tensor shape (num_frames, C, H, W)
-        """
+    def extract_frames(self, video_path):
+        """Trích xuất frames từ video"""
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open: {video_path}")
         
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         sample_rate = self.config['frame_sample_rate']
         max_frames = self.config['max_frames']
         
@@ -129,203 +119,174 @@ class MultiFrameSignLanguageDataset(Dataset):
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame = cv2.resize(frame, (self.config['image_size'], self.config['image_size']))
                 frame = frame.astype(np.float32) / 255.0
-                frame_tensor = torch.from_numpy(frame).permute(2, 0, 1)  # (C, H, W)
+                frame_tensor = torch.from_numpy(frame).permute(2, 0, 1)  # (3, H, W)
                 frames.append(frame_tensor)
             
             frame_count += 1
         
         cap.release()
         
-        # Padding nếu không đủ frames
+        # Padding nếu thiếu frames
         while len(frames) < max_frames:
-            # Duplicate last frame
-            frames.append(frames[-1] if frames else torch.zeros(3, self.config['image_size'], self.config['image_size']))
+            if frames:
+                frames.append(frames[-1].clone())
+            else:
+                frames.append(torch.zeros(3, self.config['image_size'], self.config['image_size']))
         
-        # Stack frames: (num_frames, C, H, W)
-        frames_tensor = torch.stack(frames[:max_frames])
-        
+        frames_tensor = torch.stack(frames[:max_frames])  # (max_frames, 3, H, W)
         return frames_tensor
     
     def __getitem__(self, idx):
         video_name = self.video_files[idx]
         video_path = os.path.join(self.videos_dir, video_name)
         
-        # Extract MULTI frames
-        frames = self.extract_multi_frames(video_path)  # Shape: (5, 3, 224, 224)
+        # Extract frames
+        frames = self.extract_frames(video_path)  # (max_frames, 3, H, W)
         
-        # Get label
-        label_text = self.labels[video_name]
-        label_id = self.label2id[label_text]
-        
-        # Tokenize label
-        tokens = self.tokenizer(
-            label_text,
-            max_length=self.config['max_length'],
-            padding='max_length',
-            truncation=True,
-            return_tensors='pt'
-        )
+        # Get label (toàn bộ phrase)
+        phrase = self.labels[video_name]  # "Buổi sáng", "Cảm ơn", "Tôi"
+        label_id = self.phrase2id[phrase]  # Chuyển phrase → class ID
         
         return {
-            'frames': frames,  # (num_frames, C, H, W)
+            'frames': frames,
             'label_id': torch.tensor(label_id, dtype=torch.long),
-            'input_ids': tokens['input_ids'].squeeze(0),
-            'attention_mask': tokens['attention_mask'].squeeze(0),
-            'label_text': label_text
+            'label_text': phrase
         }
 
 
-# ==================== MODEL ARCHITECTURE (MULTI-FRAME) ====================
-class MultiFrameSignLanguageModel(nn.Module):
+# ==================== MODEL ====================
+class SignLanguageRecognitionModel(nn.Module):
     """
-    Multi-frame model:
-    1. Vision Encoder (CNN per frame)
-    2. Temporal Aggregation (mean pooling)
-    3. Text Encoder (DistilBERT)
-    4. Fusion + Classifier
+    Phrase Recognition Model:
+    1. CNN per-frame feature extraction
+    2. LSTM temporal modeling
+    3. Classification head (1 phrase = 1 class)
     """
     
-    def __init__(self, num_classes, config=TRAIN_CONFIG):
+    def __init__(self, num_classes, config=RECOGNITION_CONFIG):
         super().__init__()
         self.config = config
         
-        # Vision Encoder (xử lý từng frame)
-        self.vision_encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Flatten(),
+        # CNN Feature Extractor (per frame)
+        layers = []
+        in_channels = 3
+        for out_channels in config['cnn_hidden_dims']:
+            layers.extend([
+                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.BatchNorm2d(out_channels),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
+            ])
+            in_channels = out_channels
+        
+        self.cnn = nn.Sequential(*layers)
+        
+        # Calculate CNN output size
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, config['image_size'], config['image_size'])
+            cnn_out = self.cnn(dummy)
+            self.cnn_output_dim = cnn_out.view(1, -1).size(1)
+        
+        # LSTM for temporal modeling
+        self.lstm = nn.LSTM(
+            input_size=self.cnn_output_dim,
+            hidden_size=config['lstm_hidden_dim'],
+            num_layers=config['lstm_layers'],
+            batch_first=True,
+            dropout=config['dropout'] if config['lstm_layers'] > 1 else 0,
+            bidirectional=True
         )
         
-        # Text Encoder (DistilBERT)
-        self.text_encoder = DistilBertModel.from_pretrained(config['text_encoder'])
-        
-        # Fusion layer
-        vision_dim = config['vision_hidden_dim']
-        text_dim = self.text_encoder.config.hidden_size  # 768 for DistilBERT
-        
-        self.fusion = nn.Sequential(
-            nn.Linear(vision_dim + text_dim, config['fusion_dim']),
+        # Classification head
+        lstm_output_dim = config['lstm_hidden_dim'] * 2  # bidirectional
+        self.classifier = nn.Sequential(
+            nn.Dropout(config['dropout']),
+            nn.Linear(lstm_output_dim, lstm_output_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(config['dropout']),
+            nn.Linear(lstm_output_dim // 2, num_classes)
         )
-        
-        # Classifier
-        self.classifier = nn.Linear(config['fusion_dim'], num_classes)
     
-    def forward(self, frames, input_ids, attention_mask):
+    def forward(self, frames):
         """
         Args:
-            frames: (B, num_frames, C, H, W)
-            input_ids: (B, seq_len)
-            attention_mask: (B, seq_len)
+            frames: (B, T, C, H, W) - T = num_frames
         
         Returns:
             logits: (B, num_classes)
         """
         batch_size, num_frames, C, H, W = frames.shape
         
-        # 1. Vision encoding (per frame)
-        # Reshape: (B*num_frames, C, H, W)
+        # 1. Extract per-frame features with CNN
         frames_flat = frames.view(batch_size * num_frames, C, H, W)
+        cnn_features = self.cnn(frames_flat)  # (B*T, cnn_output_dim)
+        cnn_features = cnn_features.view(batch_size, num_frames, -1)  # (B, T, cnn_output_dim)
         
-        # Encode: (B*num_frames, 128)
-        vision_features_flat = self.vision_encoder(frames_flat)
+        # 2. Temporal modeling with LSTM
+        lstm_out, (h_n, c_n) = self.lstm(cnn_features)  # lstm_out: (B, T, hidden*2)
         
-        # Reshape back: (B, num_frames, 128)
-        vision_features = vision_features_flat.view(batch_size, num_frames, -1)
+        # 3. Use last hidden state for classification
+        # h_n shape: (num_layers*2, B, hidden) for bidirectional
+        # Concatenate forward and backward last hidden states
+        h_forward = h_n[-2, :, :]  # (B, hidden)
+        h_backward = h_n[-1, :, :]  # (B, hidden)
+        h_concat = torch.cat([h_forward, h_backward], dim=1)  # (B, hidden*2)
         
-        # 2. Temporal aggregation (mean pooling)
-        vision_features_agg = vision_features.mean(dim=1)  # (B, 128)
-        
-        # 3. Text encoding
-        text_output = self.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-        text_features = text_output.last_hidden_state[:, 0, :]  # (B, 768) CLS token
-        
-        # 4. Fusion
-        combined = torch.cat([vision_features_agg, text_features], dim=1)  # (B, 896)
-        fused = self.fusion(combined)  # (B, 256)
-        
-        # 5. Classify
-        logits = self.classifier(fused)  # (B, num_classes)
+        # 4. Classification
+        logits = self.classifier(h_concat)  # (B, num_classes)
         
         return logits
 
 
 # ==================== TRAINING ====================
-def train_model(
+def train_recognition(
     train_dir=TRAIN_DIR,
     valid_dir=VALID_DIR,
-    epochs=TRAIN_CONFIG['epochs'],
-    batch_size=TRAIN_CONFIG['batch_size'],
-    learning_rate=TRAIN_CONFIG['learning_rate'],
+    epochs=RECOGNITION_CONFIG['epochs'],
+    batch_size=RECOGNITION_CONFIG['batch_size'],
+    learning_rate=RECOGNITION_CONFIG['learning_rate'],
     save_dir=MODELS_DIR
 ):
-    """
-    Train multi-frame Sign Language model với DistilBERT
-    """
-    
-    device = torch.device(TRAIN_CONFIG['device'])
+    device = torch.device(RECOGNITION_CONFIG['device'])
     print(f"\n🔥 Training on: {device}")
     
-    # Load tokenizer
-    tokenizer = DistilBertTokenizer.from_pretrained(TRAIN_CONFIG['text_encoder'])
-    
-    # Create datasets
+    # Datasets
     print("\n📊 Loading datasets...")
-    train_dataset = MultiFrameSignLanguageDataset(train_dir, tokenizer)
+    train_dataset = SignLanguagePhraseDataset(train_dir)
+    num_classes = train_dataset.num_classes
+    phrase2id = train_dataset.phrase2id
+    id2phrase = train_dataset.id2phrase
     
     if os.path.exists(os.path.join(valid_dir, 'vid')):
-        valid_dataset = MultiFrameSignLanguageDataset(valid_dir, tokenizer)
+        valid_dataset = SignLanguagePhraseDataset(valid_dir)
+        # Ensure same vocabulary
+        valid_dataset.phrase2id = phrase2id
+        valid_dataset.id2phrase = id2phrase
+        valid_dataset.num_classes = num_classes
     else:
-        print("⚠️  Valid dataset not found, using train for validation")
         valid_dataset = train_dataset
+        print("⚠️  No validation set, using train for validation")
     
-    # DataLoaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0,  # CPU mode
-        pin_memory=False
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
     
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0
-    )
+    # Model
+    print(f"\n🏗️  Building Recognition model...")
+    print(f"📊 Number of classes: {num_classes}")
+    print(f"📝 Classes: {list(id2phrase.values())[:10]}...")
     
-    # Create model
-    print("\n🏗️  Building multi-frame model...")
-    num_classes = len(train_dataset.label2id)
-    model = MultiFrameSignLanguageModel(num_classes=num_classes)
+    model = SignLanguageRecognitionModel(num_classes=num_classes)
     model = model.to(device)
     
-    # Count parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"📊 Model parameters: {trainable_params:,} / {total_params:,}")
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"📊 Trainable parameters: {total_params:,}")
     
-    # Optimizer & Scheduler
-    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
-    
-    total_steps = len(train_loader) * epochs
-    scheduler = get_linear_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(0.1 * total_steps),
-        num_training_steps=total_steps
-    )
-    
-    # Loss function
+    # Loss & Optimizer
     criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=5
+    )
     
     # Training loop
     best_val_acc = 0.0
@@ -336,76 +297,87 @@ def train_model(
         print(f"Epoch {epoch+1}/{epochs}")
         print(f"{'='*60}")
         
-        # ========== TRAINING ==========
+        # ===== TRAINING =====
         model.train()
         train_loss = 0.0
         train_correct = 0
         train_total = 0
         
-        progress_bar = tqdm(train_loader, desc="Training")
-        
-        for batch in progress_bar:
-            frames = batch['frames'].to(device)  # (B, 5, 3, 224, 224)
-            labels = batch['label_id'].to(device)
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+        for batch in tqdm(train_loader, desc="Training"):
+            frames = batch['frames'].to(device)  # (B, T, C, H, W)
+            labels = batch['label_id'].to(device)  # (B,)
+            
+            optimizer.zero_grad()
             
             # Forward
-            optimizer.zero_grad()
-            logits = model(frames, input_ids, attention_mask)
+            logits = model(frames)  # (B, num_classes)
             loss = criterion(logits, labels)
             
             # Backward
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            scheduler.step()
             
             # Metrics
             train_loss += loss.item()
             predictions = torch.argmax(logits, dim=1)
             train_correct += (predictions == labels).sum().item()
             train_total += labels.size(0)
-            
-            # Update progress
-            progress_bar.set_postfix({
-                'loss': f"{loss.item():.4f}",
-                'acc': f"{train_correct/train_total:.4f}"
-            })
         
         train_loss /= len(train_loader)
         train_acc = train_correct / train_total
         
-        # ========== VALIDATION ==========
+        # ===== VALIDATION =====
         model.eval()
         val_loss = 0.0
         val_correct = 0
         val_total = 0
         
+        # For detailed error analysis
+        predictions_detail = []
+        
         with torch.no_grad():
             for batch in tqdm(valid_loader, desc="Validation"):
                 frames = batch['frames'].to(device)
                 labels = batch['label_id'].to(device)
-                input_ids = batch['input_ids'].to(device)
-                attention_mask = batch['attention_mask'].to(device)
+                label_texts = batch['label_text']
                 
-                logits = model(frames, input_ids, attention_mask)
+                logits = model(frames)
                 loss = criterion(logits, labels)
                 
                 val_loss += loss.item()
                 predictions = torch.argmax(logits, dim=1)
                 val_correct += (predictions == labels).sum().item()
                 val_total += labels.size(0)
+                
+                # Store predictions for analysis
+                for i in range(len(predictions)):
+                    pred_phrase = id2phrase[predictions[i].item()]
+                    true_phrase = label_texts[i]
+                    predictions_detail.append({
+                        'true': true_phrase,
+                        'predicted': pred_phrase,
+                        'correct': (pred_phrase == true_phrase)
+                    })
         
         val_loss /= len(valid_loader)
         val_acc = val_correct / val_total
         
-        # Print epoch results
-        print(f"\n📊 Epoch {epoch+1} Results:")
-        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-        print(f"  Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
+        # Update scheduler
+        scheduler.step(val_loss)
         
-        # Save history
+        # Print metrics
+        print(f"\n📊 Epoch {epoch+1} Results:")
+        print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} ({train_correct}/{train_total})")
+        print(f"  Val Loss:   {val_loss:.4f}   | Val Acc:   {val_acc:.4f} ({val_correct}/{val_total})")
+        
+        # Show some validation predictions
+        if epoch % 5 == 0:
+            print(f"\n📝 Sample Validation Predictions:")
+            for pred in predictions_detail[:5]:
+                status = "✅" if pred['correct'] else "❌"
+                print(f"  {status} True: '{pred['true']}' | Predicted: '{pred['predicted']}'")
+        
         history['train_loss'].append(train_loss)
         history['train_acc'].append(train_acc)
         history['val_loss'].append(val_loss)
@@ -414,62 +386,44 @@ def train_model(
         # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            model_save_path = os.path.join(save_dir, 'best_distilbert_multiframe.pt')
-            
+            model_path = os.path.join(save_dir, 'best_phrase_recognition.pt')
             torch.save({
-                'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
+                'config': RECOGNITION_CONFIG,
+                'num_classes': num_classes,
+                'phrase2id': phrase2id,
+                'id2phrase': id2phrase,
+                'epoch': epoch,
                 'val_acc': val_acc,
-                'label2id': train_dataset.label2id,
-                'id2label': train_dataset.id2label,
-                'config': TRAIN_CONFIG
-            }, model_save_path)
-            
-            print(f"✅ Saved best model: {model_save_path} (Val Acc: {val_acc:.4f})")
+                'val_loss': val_loss
+            }, model_path)
+            print(f"✅ Saved best model (Val Acc: {val_acc:.4f})")
     
-    # Save training history
-    history_path = os.path.join(RESULTS_DIR, 'training_history_multiframe.json')
-    with open(history_path, 'w') as f:
-        json.dump(history, f, indent=2)
+    # Save history
+    history_path = os.path.join(RESULTS_DIR, 'phrase_recognition_history.json')
+    with open(history_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
     
     print(f"\n{'='*60}")
     print("✅ TRAINING COMPLETE!")
-    print(f"{'='*60}")
     print(f"Best Val Accuracy: {best_val_acc:.4f}")
-    print(f"Model saved to: {model_save_path}")
-    print(f"History saved to: {history_path}")
+    print(f"{'='*60}")
     
-    return model, history
+    return model
 
 
 # ==================== INFERENCE ====================
-def load_trained_model(model_path):
-    """Load trained multi-frame model"""
-    checkpoint = torch.load(model_path, map_location='cpu')
-    
-    label2id = checkpoint['label2id']
-    num_classes = len(label2id)
-    config = checkpoint.get('config', TRAIN_CONFIG)
-    
-    model = MultiFrameSignLanguageModel(num_classes=num_classes, config=config)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    
-    return model, checkpoint['id2label'], config
-
-
-def predict_video_multiframe(model, video_path, id2label, tokenizer, config=TRAIN_CONFIG):
-    """Dự đoán video với trained multi-frame model"""
+def recognize_video(model, video_path, id2phrase, config=RECOGNITION_CONFIG):
+    """Nhận diện video → phrase (cụm từ)"""
     device = torch.device(config['device'])
     model = model.to(device)
+    model.eval()
     
-    # Extract multi frames (same as training)
+    # Extract frames
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        return None, 0.0
+        raise ValueError(f"Cannot open: {video_path}")
     
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     sample_rate = config['frame_sample_rate']
     max_frames = config['max_frames']
     
@@ -485,8 +439,7 @@ def predict_video_multiframe(model, video_path, id2label, tokenizer, config=TRAI
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame = cv2.resize(frame, (config['image_size'], config['image_size']))
             frame = frame.astype(np.float32) / 255.0
-            frame_tensor = torch.from_numpy(frame).permute(2, 0, 1)
-            frames.append(frame_tensor)
+            frames.append(torch.from_numpy(frame).permute(2, 0, 1))
         
         frame_count += 1
     
@@ -494,81 +447,194 @@ def predict_video_multiframe(model, video_path, id2label, tokenizer, config=TRAI
     
     # Padding
     while len(frames) < max_frames:
-        frames.append(frames[-1] if frames else torch.zeros(3, config['image_size'], config['image_size']))
+        if frames:
+            frames.append(frames[-1].clone())
+        else:
+            frames.append(torch.zeros(3, config['image_size'], config['image_size']))
     
-    # Stack: (1, num_frames, C, H, W)
-    frames_tensor = torch.stack(frames[:max_frames]).unsqueeze(0).to(device)
+    frames_tensor = torch.stack(frames[:max_frames]).unsqueeze(0).to(device)  # (1, T, 3, H, W)
     
-    # Dummy text input
-    tokens = tokenizer(
-        "test",
-        max_length=config['max_length'],
-        padding='max_length',
-        truncation=True,
-        return_tensors='pt'
-    )
-    input_ids = tokens['input_ids'].to(device)
-    attention_mask = tokens['attention_mask'].to(device)
-    
-    # Predict
+    # Recognition
     with torch.no_grad():
-        logits = model(frames_tensor, input_ids, attention_mask)
+        logits = model(frames_tensor)  # (1, num_classes)
         probs = torch.softmax(logits, dim=1)
         pred_id = torch.argmax(probs, dim=1).item()
         confidence = probs[0, pred_id].item()
+        
+        # Get top-3 predictions
+        top3_probs, top3_ids = torch.topk(probs[0], min(3, len(id2phrase)))
+        top3_results = [
+            {'phrase': id2phrase[idx.item()], 'confidence': prob.item()}
+            for idx, prob in zip(top3_ids, top3_probs)
+        ]
     
-    prediction = id2label[pred_id]
+    recognized_phrase = id2phrase[pred_id]
     
-    return prediction, confidence
+    return {
+        'phrase': recognized_phrase,
+        'confidence': confidence,
+        'class_id': pred_id,
+        'top3': top3_results
+    }
+
+
+# ==================== EVALUATION ====================
+def evaluate_on_test(model_path, test_dir=TEST_DIR):
+    """Đánh giá model trên test set"""
+    device = torch.device(RECOGNITION_CONFIG['device'])
+    
+    # Load model
+    if not os.path.exists(model_path):
+        print(f"❌ Model không tồn tại: {model_path}")
+        return
+    
+    checkpoint = torch.load(model_path, map_location=device)
+    config = checkpoint['config']
+    num_classes = checkpoint['num_classes']
+    id2phrase = checkpoint['id2phrase']
+    phrase2id = checkpoint['phrase2id']
+    
+    model = SignLanguageRecognitionModel(num_classes=num_classes, config=config)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+    
+    # Load test dataset
+    if not os.path.exists(os.path.join(test_dir, 'vid')):
+        print(f"❌ Test folder không tồn tại: {test_dir}")
+        return
+    
+    test_dataset = SignLanguagePhraseDataset(test_dir, config=config)
+    test_dataset.phrase2id = phrase2id
+    test_dataset.id2phrase = id2phrase
+    test_dataset.num_classes = num_classes
+    
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, num_workers=0)
+    
+    # Evaluate
+    correct = 0
+    total = 0
+    predictions = []
+    
+    # Per-class accuracy
+    class_correct = {phrase: 0 for phrase in phrase2id.keys()}
+    class_total = {phrase: 0 for phrase in phrase2id.keys()}
+    
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Testing"):
+            frames = batch['frames'].to(device)
+            labels = batch['label_id'].to(device)
+            label_texts = batch['label_text']
+            
+            logits = model(frames)
+            preds = torch.argmax(logits, dim=1)
+            
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+            
+            # Store predictions
+            for i in range(len(preds)):
+                pred_phrase = id2phrase[preds[i].item()]
+                true_phrase = label_texts[i]
+                is_correct = (pred_phrase == true_phrase)
+                
+                predictions.append({
+                    'true_label': true_phrase,
+                    'predicted_label': pred_phrase,
+                    'correct': is_correct
+                })
+                
+                # Update per-class stats
+                class_total[true_phrase] += 1
+                if is_correct:
+                    class_correct[true_phrase] += 1
+    
+    accuracy = correct / total
+    
+    # Calculate per-class accuracy
+    per_class_accuracy = {}
+    for phrase in phrase2id.keys():
+        if class_total[phrase] > 0:
+            per_class_accuracy[phrase] = class_correct[phrase] / class_total[phrase]
+        else:
+            per_class_accuracy[phrase] = 0.0
+    
+    # Save results
+    results = {
+        'overall_accuracy': accuracy,
+        'total_samples': total,
+        'correct_predictions': correct,
+        'per_class_accuracy': per_class_accuracy,
+        'predictions': predictions
+    }
+    
+    results_path = os.path.join(RESULTS_DIR, 'test_evaluation_phrase.json')
+    with open(results_path, 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n{'='*60}")
+    print(f"📊 TEST EVALUATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Overall Accuracy: {accuracy:.4f} ({correct}/{total})")
+    print(f"\n📊 Per-Class Accuracy:")
+    for phrase, acc in sorted(per_class_accuracy.items(), key=lambda x: x[1], reverse=True):
+        count = class_total[phrase]
+        print(f"  '{phrase}': {acc:.4f} ({class_correct[phrase]}/{count})")
+    print(f"\nResults saved: {results_path}")
+    print(f"{'='*60}")
+    
+    return results
 
 
 # ==================== MAIN ====================
 if __name__ == "__main__":
     print("\nChọn chức năng:")
-    print("1. Train model (DistilBERT + Multi-frame)")
-    print("2. Test model đã train")
-    print("3. Evaluate trên valid dataset")
+    print("1. Train Phrase Recognition model")
+    print("2. Recognize video → phrase")
+    print("3. Evaluate on test set")
     print("0. Thoát")
     
     choice = input("\nNhập lựa chọn: ").strip()
     
     if choice == "1":
-        epochs = int(input(f"Số epochs (mặc định {TRAIN_CONFIG['epochs']}): ").strip() or TRAIN_CONFIG['epochs'])
-        batch_size = int(input(f"Batch size (mặc định {TRAIN_CONFIG['batch_size']}): ").strip() or TRAIN_CONFIG['batch_size'])
-        
-        print("\n⚙️  Training với Multi-frame:")
-        print(f"  - Frames per video: {TRAIN_CONFIG['max_frames']}")
-        print(f"  - Sample rate: {TRAIN_CONFIG['frame_sample_rate']}")
-        print(f"  - Image size: {TRAIN_CONFIG['image_size']}x{TRAIN_CONFIG['image_size']}")
-        
-        confirm = input("\nBắt đầu training? (y/n): ").strip().lower()
-        if confirm == 'y':
-            model, history = train_model(epochs=epochs, batch_size=batch_size)
-        
+        epochs = input(f"Epochs (default {RECOGNITION_CONFIG['epochs']}): ").strip()
+        epochs = int(epochs) if epochs else RECOGNITION_CONFIG['epochs']
+        model = train_recognition(epochs=epochs)
+    
     elif choice == "2":
-        model_path = os.path.join(MODELS_DIR, 'best_distilbert_multiframe.pt')
-        
+        model_path = os.path.join(MODELS_DIR, 'best_phrase_recognition.pt')
         if not os.path.exists(model_path):
-            print("❌ Model chưa được train! Chạy option 1 trước.")
+            print("❌ Model chưa train! Chạy option 1.")
         else:
-            model, id2label, config = load_trained_model(model_path)
-            tokenizer = DistilBertTokenizer.from_pretrained(TRAIN_CONFIG['text_encoder'])
+            checkpoint = torch.load(model_path, map_location='cpu')
+            model = SignLanguageRecognitionModel(
+                num_classes=checkpoint['num_classes'],
+                config=checkpoint['config']
+            )
+            model.load_state_dict(checkpoint['model_state_dict'])
+            id2phrase = checkpoint['id2phrase']
             
-            video_path = input("Nhập đường dẫn video: ").strip()
-            
+            video_path = input("Đường dẫn video: ").strip()
             if os.path.exists(video_path):
-                print("\n🔄 Analyzing video (multi-frame)...")
-                prediction, confidence = predict_video_multiframe(model, video_path, id2label, tokenizer, config)
-                print(f"\n✅ Prediction: {prediction}")
-                print(f"📊 Confidence: {confidence:.2%}")
+                result = recognize_video(model, video_path, id2phrase)
+                print(f"\n{'='*60}")
+                print(f"✅ RECOGNITION RESULT:")
+                print(f"{'='*60}")
+                print(f"📝 Phrase: {result['phrase']}")
+                print(f"🎯 Confidence: {result['confidence']:.2%}")
+                print(f"\n📊 Top 3 Predictions:")
+                for i, pred in enumerate(result['top3'], 1):
+                    print(f"  {i}. '{pred['phrase']}' ({pred['confidence']:.2%})")
+                print(f"{'='*60}")
             else:
                 print("❌ File không tồn tại!")
     
     elif choice == "3":
-        print("🚧 Đang phát triển...")
+        model_path = os.path.join(MODELS_DIR, 'best_phrase_recognition.pt')
+        if not os.path.exists(model_path):
+            print("❌ Model chưa train! Chạy option 1.")
+        else:
+            evaluate_on_test(model_path)
     
     elif choice == "0":
         print("👋 Tạm biệt!")
-    
-    else:
-        print("❌ Lựa chọn không hợp lệ!")
