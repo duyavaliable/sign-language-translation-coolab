@@ -1,316 +1,61 @@
-# Sign Language Translation - YOLOv8 Segmentation
-
-Hệ thống nhận diện ngôn ngữ ký hiệu (ASL - American Sign Language) sử dụng **YOLOv8 Segmentation** và Deep Learning.
-
-## 📋 Mô tả
-
-Project này sử dụng **YOLOv8 Segmentation** để phát hiện và nhận diện các ký hiệu ngôn ngữ tay ASL từ ảnh. Hệ thống có thể:
-
-- ✅ Huấn luyện YOLOv8-seg model từ dataset segmentation tùy chỉnh
-- ✅ Phát hiện và nhận diện 22 ký tự ASL (A-Z trừ F và J)
-- ✅ Dự đoán với polygon masks (segmentation) thay vì chỉ bounding boxes
-- ✅ Visualize dataset với cả cấu trúc flat và per-class
-- ✅ Hỗ trợ training trên CPU và GPU
-
-## 🎯 Điểm nổi bật
-
-### YOLOv8 Segmentation vs Detection
-
-| Feature | Detection (bbox) | **Segmentation (polygon)** ✓ |
-|---------|------------------|-------------------------------|
-| Output | Bounding box | Polygon mask |
-| Độ chính xác | Trung bình | **Cao hơn** |
-| Label format | `class x y w h` | **`class x1 y1 x2 y2 ...`** |
-| Use case | Object localization | **Precise shape detection** |
-
-**Dataset hiện tại** sử dụng **polygon labels** (segmentation format), phù hợp với YOLOv8-seg.
-
-## 🗂️ Cấu trúc thư mục
-
-```
-sign-language-translation/
-├── .gitignore                      # Loại trừ file không cần thiết
-├── requirements.txt                # Thư viện Python
-├── sign_language_translation.py    # ⭐ File chính (YOLOv8-seg)
-├── README.md                       # File này
-├── dataset/                        # ⚠️ KHÔNG được push lên GitHub
-│   ├── train/
-│   │   ├── images/                # Ảnh training
-│   │   └── labels/                # ⭐ SEGMENTATION labels (.txt)
-│   │       └── *.txt              # Format: class x1 y1 x2 y2 ...
-│   └── val/
-│       ├── images/                # Ảnh validation
-│       └── labels/                # Labels validation
-├── models/                         # ⚠️ Models đã train (không push)
-│   └── sign_language_model/
-│       └── weights/
-│           └── best.pt            # YOLOv8-seg model tốt nhất
-└── train/                          # Config files
-    └── dataset.yaml               # YOLO dataset config
-```
-
-## 🚀 Cài đặt
-
-### Yêu cầu hệ thống
-
-- **Python**: 3.10 hoặc 3.11 (⚠️ **KHÔNG** dùng Python 3.13)
-- **OS**: Windows 10/11, Linux, hoặc macOS
-- **Hardware**: 
-  - GPU NVIDIA (khuyến nghị, tăng tốc 10-50x)
-  - CPU (có thể dùng nhưng chậm hơn)
-
-### Bước 1: Clone repository
-
-```bash
-git clone https://github.com/your-username/sign-language-translation.git
-cd sign-language-translation
-```
-
-### Bước 2: Tạo môi trường ảo
-
-**Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-**Linux/macOS:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### Bước 3: Cài đặt thư viện
-
-```bash
-# Nâng cấp pip
-python -m pip install --upgrade pip setuptools wheel
-
-# Cài đặt dependencies (bao gồm ultralytics YOLOv8)
-pip install -r requirements.txt
-```
-
-### Bước 4: Chuẩn bị dataset
-
-#### 📥 Tải dataset ASL (Segmentation format)
-
-**Nguồn khuyến nghị:**
-- [Roboflow ASL Segmentation](https://universe.roboflow.com/david-lee-d0rhs/american-sign-language-letters) ⭐
-- Xuất ở định dạng **YOLOv8 Segmentation**
-
-**⚠️ QUAN TRỌNG:** Dataset phải có **segmentation labels** (polygon format):
-
-```
-# Ví dụ file label: A_0.txt
-0 0.794 0.059 0.736 0.125 0.714 0.126 ... (nhiều cặp x,y tạo polygon)
-```
-
-**KHÔNG phải** detection format (chỉ có 5 số):
-```
-0 0.5 0.5 0.3 0.4  # ❌ SAI - đây là detection format
-```
-
-#### 📁 Tổ chức dataset
-
-Đặt dataset theo cấu trúc sau:
-
-```
-dataset/
-├── train/
-│   ├── images/
-│   │   ├── A_0.jpg
-│   │   ├── A_1.jpg
-│   │   └── ...
-│   └── labels/
-│       ├── A_0.txt       # Segmentation labels
-│       ├── A_1.txt
-│       └── ...
-└── val/                  # Validation data (tùy chọn)
-    ├── images/
-    └── labels/
-```
-
-**Lưu ý:**
-- Mỗi ảnh `.jpg` phải có file label `.txt` tương ứng
-- File label chứa polygon points (nhiều cặp x,y) thay vì bbox (x,y,w,h)
-
-## 🎯 Sử dụng
-
-### Chạy chương trình chính
-
-```bash
-python sign_language_translation.py
-```
-
-Menu sẽ hiển thị:
-```
-🤖 SIGN LANGUAGE TRANSLATION - YOLOv8 SEGMENTATION
-============================================================
-📁 Base Directory: E:\...\sign-language-translation
-📁 Dataset Directory: E:\...\dataset
-📁 Models Directory: E:\...\models
-🔧 Model: YOLOv8 Segmentation (yolov8n-seg.pt)
-============================================================
-
-Chọn chức năng:
-1. Tạo file dataset.yaml
-2. Visualize dataset
-3. Train model (YOLOv8-seg)
-4. Predict trên ảnh
-0. Thoát
-```
-
-### 1️⃣ Tạo file cấu hình dataset
-
-```bash
-# Option 1: Qua menu (chọn 1)
-python sign_language_translation.py
-
-# Option 2: Gọi trực tiếp
-python -c "from sign_language_translation import create_dataset_yaml; create_dataset_yaml(use_all=True)"
-```
-
-Tham số:
-- `use_all=True`: Dùng toàn bộ train data cho cả training và validation
-- `use_all=False`: Dùng riêng val/ cho validation (khuyến nghị nếu có val data)
-
-### 2️⃣ Xem mẫu dataset
-
-```bash
-# Visualize dataset để kiểm tra
-python -c "from sign_language_translation import visualize_dataset; visualize_dataset()"
-```
-
-### 3️⃣ Huấn luyện model YOLOv8-seg
-
-```bash
-# Training cơ bản
-python -c "from sign_language_translation import train_model; train_model(epochs=50, batch=16, use_all=True)"
-```
-
-**Tham số training:**
-
-| Tham số | Mặc định | Mô tả |
-|---------|----------|-------|
-| `epochs` | 50 | Số lần duyệt toàn bộ dataset |
-| `batch` | 16 | Số ảnh xử lý cùng lúc (giảm nếu thiếu RAM/VRAM) |
-| `imgsz` | 640 | Kích thước ảnh input (640, 800, 1024...) |
-| `model_name` | `'yolov8n-seg.pt'` | Pretrained model (n/s/m/l/x) |
-| `use_all` | False | Dùng toàn bộ data cho training |
-
-**Ví dụ training nâng cao:**
-
-```python
-from sign_language_translation import train_model
-
-# Training 100 epochs với batch size 8 (phù hợp GPU nhỏ)
-model, results = train_model(
-    epochs=100,
-    batch=8,
-    imgsz=800,
-    model_name='yolov8s-seg.pt',  # Model lớn hơn = chính xác hơn
-    use_all=True
-)
-```
-
-**Lưu ý:**
-- GPU khuyến nghị: batch=16-32
-- CPU hoặc GPU nhỏ: batch=4-8
-- Model sau training lưu tại: `models/sign_language_model/weights/best.pt`
-
-### 4️⃣ Dự đoán trên ảnh mới
-
-```bash
-# Qua menu (chọn 4)
-python sign_language_translation.py
-
-# Hoặc gọi trực tiếp
-python -c "
-from ultralytics import YOLO
-from sign_language_translation import predict_image
-
-model = YOLO('models/sign_language_model/weights/best.pt')
-predict_image(model, 'path/to/test_image.jpg')
-"
-```
-
-## 📊 Dataset Classes
-
-Dataset bao gồm **22 class** tương ứng với các ký tự ASL:
-
-```
-A, B, C, D, E, G, H, I, K, L, M, N, O, P, Q, R, S, T, U, V, X, Y
-```
-
-**Lưu ý:** Không bao gồm F và J vì yêu cầu chuyển động (động tác)
-
-## 🔧 Troubleshooting
-
-### ❌ Lỗi: "No module named 'ultralytics'"
-
-```bash
-pip install ultralytics
-```
-
-### ❌ Lỗi: "CUDA out of memory"
-
-Giảm batch size:
-```python
-train_model(batch=4)  # Thay vì 16
-```
-
-### ❌ Warning: "Validation path không tồn tại"
-
-Chọn `use_all=True` khi training:
-```python
-train_model(use_all=True)
-```
-
-### ❌ Lỗi: "Labels wrong format"
-
-Kiểm tra format label:
-```bash
-# Đúng (segmentation): nhiều cặp x,y
-0 0.794 0.059 0.736 0.125 0.714 0.126 ...
-
-# Sai (detection): chỉ 5 số
-0 0.5 0.5 0.3 0.4  # ❌ Cần convert sang segmentation
-```
-
-## 📦 Quản lý Dataset và Model
-
-⚠️ **Dataset và model KHÔNG được push lên GitHub** (xem [.gitignore](.gitignore))
-
-Khi clone repo, bạn cần:
-1. Tải dataset riêng từ nguồn công khai (xem [Bước 4](#bước-4-chuẩn-bị-dataset))
-2. Train model của riêng bạn (xem [Phần 3](#3️⃣-huấn-luyện-model-yolov8-seg))
-
-**Chia sẻ dataset/model qua:**
-- Google Drive / Dropbox
-- Kaggle Datasets
-- Hugging Face Model Hub
-
-## 🤝 Đóng góp
-
-1. Fork repo
-2. Tạo branch mới (`git checkout -b feature/AmazingFeature`)
-3. Commit thay đổi (`git commit -m 'Add YOLOv8-seg support'`)
-4. Push lên branch (`git push origin feature/AmazingFeature`)
-5. Tạo Pull Request
-
-## 📄 License
-
-MIT License - Project chỉ dùng cho mục đích học tập và nghiên cứu.
-
-## 📚 Tài liệu tham khảo
-
-- [Ultralytics YOLOv8 Docs](https://docs.ultralytics.com/)
-- [YOLOv8 Segmentation Guide](https://docs.ultralytics.com/tasks/segment/)
-- [Roboflow Universe - ASL Dataset](https://universe.roboflow.com/)
-
----
-
-**⚠️ Lưu ý quan trọng:**
-- Project này sử dụng **YOLOv8 Segmentation** (không phải Detection)
-- Labels phải ở format **polygon** (nhiều cặp x,y), không phải bbox (x,y,w,h)
-- Pretrained model mặc định: `yolov8n-seg.pt` (segmentation)
+# Sign Language Translation (Video → Vietnamese)
+
+Lightweight toolkit để huấn luyện và đánh giá mô hình nhận diện ký hiệu tay (phrase recognition / video→text) trên tập dữ liệu video nhỏ. Hướng dẫn ngắn, phù hợp máy chỉ có CPU.
+
+## Nội dung chính
+- Mục tiêu: nhận diện video chứa 1 ký hiệu (từ/cụm từ) và dịch thành câu/phrase tiếng Việt.
+- Mô hình chính: CNN per-frame + LSTM sequence + classifier — training script: [train_sign_language_distilbert.py](train_sign_language_distilbert.py).
+- Công cụ hỗ trợ: chia dữ liệu, đồng bộ, nhân bản label:
+  - Split train/valid: [split_train_valid_videos.py](split_train_valid_videos.py)
+  - Sync valid từ train (copy/move khi cần): [sync_valid_with_train.py](sync_valid_with_train.py)
+  - Tạo/kiểm tra label duplicates: [augment_labels.py](augment_labels.py)
+
+## Cấu trúc thư mục (quan trọng)
+- train/
+  - vid/ — video training (.mp4/.avi/...)
+  - labels/ — file .txt tương ứng (mỗi file chứa phrase)
+- valid/
+  - vid/, labels/ — validation set
+- models/ — lưu checkpoints (ví dụ: [models/best_phrase_recognition.pt](models/best_phrase_recognition.pt))
+- results/ — lịch sử training (ví dụ: [results/phrase_recognition_history.json](results/phrase_recognition_history.json))
+- requirements.txt — dependencies ([requirements.txt](requirements.txt))
+
+## Quick start (CPU)
+1. Tạo virtualenv và kích hoạt.
+2. Cài phụ thuộc:
+   pip install -r requirements.txt
+3. Chuẩn bị dữ liệu:
+   - Đảm bảo mỗi video train/vid/X.mp4 có file label train/labels/X.txt chứa câu/phrase tiếng Việt tương ứng.
+4. (Tùy chọn) Nếu cần split mới: chạy
+   python split_train_valid_videos.py --ratio 0.8 --move
+   hoặc dùng dry-run để kiểm tra.
+5. Train:
+   python train_sign_language_distilbert.py
+   → Chọn option 1 trong menu. Xem và điều chỉnh cấu hình trong [train_sign_language_distilbert.py](train_sign_language_distilbert.py).
+6. Test một video:
+   Chọn option 2 trong [train_sign_language_distilbert.py](train_sign_language_distilbert.py) và nhập đường dẫn video.
+
+## Lưu ý khi dữ liệu ít
+- Dữ liệu hiện tại nhỏ → dễ overfit (xem [results/phrase_recognition_history.json](results/phrase_recognition_history.json)).
+- Khuyến nghị:
+  - Tăng data: quay thêm hoặc augmentation video.
+  - Dùng [augment_labels.py](augment_labels.py) để nhân bản label (chỉ nhân nội dung label, không tạo video).
+  - Dùng data augmentation runtime (flip, brightness, noise) — đã tích hợp trong dataset.
+  - Giảm kích thước mô hình / số frames khi chạy trên CPU (tham số trong [train_sign_language_distilbert.py](train_sign_language_distilbert.py)).
+  - Kiểm tra valid labels không chứa class chưa có trong train.
+
+## Tips vận hành
+- Trước mỗi lần split toàn bộ dữ liệu mới: gộp mọi file về `train/` rồi chạy `split_train_valid_videos.py` để tránh trùng lặp.
+- Nếu muốn đồng bộ nhanh labels → videos: dùng [sync_valid_with_train.py](sync_valid_with_train.py).
+- Lưu trữ checkpoints ở `models/` (đã .gitignore).
+
+## Tham khảo nhanh các file chính
+- Training & inference: [train_sign_language_distilbert.py](train_sign_language_distilbert.py)
+- Split dữ liệu: [split_train_valid_videos.py](split_train_valid_videos.py)
+- Sync valid labels: [sync_valid_with_train.py](sync_valid_with_train.py)
+- Label augmentation/prune: [augment_labels.py](augment_labels.py)
+- Dependencies: [requirements.txt](requirements.txt)
+- Training history: [results/phrase_recognition_history.json](results/phrase_recognition_history.json)
+- Checkpoint mẫu: [models/best_phrase_recognition.pt](models/best_phrase_recognition.pt)
+
+Nếu muốn tôi cập nhật README bằng tiếng Anh hoặc thêm phần hướng dẫn chi tiết cho CPU-only training, tôi sẽ chỉnh file trên.
